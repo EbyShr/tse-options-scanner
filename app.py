@@ -691,22 +691,24 @@ st.markdown(
 # ==============================================================================
 def create_spider_chart(
     readiness: float,
-    liquidity: float,
     relative_val: float,
+    leverage: float,
+    liquidity: float,
     dte_suit: float,
     is_call: bool = True,
     dark_mode: bool = True,
 ):
     """
-    تولید چارت راداری مینیمال و جذاب Plotly جهت نمایش توازن ۴ مؤلفه امتیاز
+    تولید چارت راداری مینیمال و جذاب Plotly جهت نمایش توازن ۵ مؤلفه امتیاز (v3)
     """
     categories = [
         "آمادگی پایه",
-        "نقدینگی ترکیبی",
         "ارزش نسبی (BSM)",
+        "اهرم",
+        "نقدینگی ترکیبی",
         "تناسب سررسید",
     ]
-    r_values = [readiness, liquidity, relative_val, dte_suit, readiness]
+    r_values = [readiness, relative_val, leverage, liquidity, dte_suit, readiness]
     cat_closed = categories + [categories[0]]
 
     if is_call:
@@ -767,7 +769,7 @@ st.markdown(
         <h2 style="margin:0; font-weight:bold;">📈 اسکنر و رتبه‌بند اختیار معامله بورس تهران</h2>
     </div>
     <div style="color:#64748B; font-size:14px; margin-bottom:18px;">
-        پایش جامع ۲۴ دارایی پایه • ارزش‌گذاری بلک-شولز • رتبه‌بندی الگوریتمی ۴ مؤلفه‌ای • مهار Deep OTM و سقف ضد-Chasing
+        پایش جامع ۲۴ دارایی پایه • ارزش‌گذاری بلک-شولز • رتبه‌بندی الگوریتمی ۵ مؤلفه‌ای (v3) • مهار Deep OTM و سقف ضد-Chasing
     </div>
     """,
     unsafe_allow_html=True,
@@ -948,7 +950,9 @@ with tab1:
             "حباب خام (%)",
             "حباب ریالی",
             "اهرم",
+            "امتیاز اهرم",
             "امتیاز الگوریتم",
+            "برچسب سفته‌بازی",
             "آمادگی پایه",
             "ارزش معاملات امروز (ریال)",
             "تعداد معاملات امروز",
@@ -982,7 +986,9 @@ with tab1:
                 "حباب خام (%)": st.column_config.NumberColumn("حباب (%)", format="%.1f%%", help="برای قراردادهای Deep OTM حباب درصدی به علت مخرج نزدیک صفر N/A است."),
                 "حباب ریالی": st.column_config.NumberColumn("حباب ریالی", format="%,d", help="اختلاف قیمت بازار از قیمت تئوریک BSM به ریال"),
                 "اهرم": st.column_config.NumberColumn("اهرم", format="%.2f"),
-                "امتیاز الگوریتم": st.column_config.ProgressColumn("امتیاز الگوریتم", format="%.1f", min_value=0, max_value=100, help="امتیاز واحد سیستم جامع (۰ تا ۱۰۰)"),
+                "امتیاز اهرم": st.column_config.NumberColumn("امتیاز اهرم (۱۵٪)", format="%.1f", help="امتیاز صدکی اهرم (۰ تا ۱۰۰) در میان واجدین شرایط روز"),
+                "امتیاز الگوریتم": st.column_config.NumberColumn("امتیاز الگوریتم (v3)", format="%.1f", help="امتیاز واحد سیستم جامع بر اساس وزن‌های v3 (۰ تا ۱۰۰). قراردادهای لاتاری/بی‌ارزش عمیق فاقد امتیاز هستند."),
+                "برچسب سفته‌بازی": st.column_config.TextColumn("برچسب وضعیت / لاتاری", help="برچسب 'لاتاری/بی‌ارزش عمیق' برای قراردادهای با BSM کمتر از ۱۰ ریال یا دلتا کمتر از ۰.۱۰"),
                 "آمادگی پایه": st.column_config.NumberColumn("آمادگی پایه", format="%.0f"),
                 "ارزش معاملات امروز (ریال)": st.column_config.NumberColumn("ارزش معامله (ریال)", format="%,d"),
                 "تعداد معاملات امروز": st.column_config.NumberColumn("تعداد معامله", format="%,d"),
@@ -1094,12 +1100,14 @@ with tab2:
                 card_style = "entry-card-call" if is_call_type else "entry-card-put"
                 fill_class = "mini-bar-fill-call" if is_call_type else "mini-bar-fill-put"
 
-                final_sc = float(row_item.get("امتیاز الگوریتم", 0.0))
+                final_sc = row_item.get("امتیاز الگوریتم")
+                final_sc_display = f"{float(final_sc):.1f}" if pd.notna(final_sc) and final_sc is not None else "N/A"
                 read_sc = float(row_item.get("امتیاز آمادگی پایه", 0.0))
                 comb_liq_sc = float(row_item.get("امتیاز نقدینگی ترکیبی", 0.0))
                 struct_liq = float(row_item.get("امتیاز نقدینگی ساختاری", 0.0))
                 spike_liq = float(row_item.get("امتیاز جهش لحظه‌ای", 0.0))
                 rel_val_sc = float(row_item.get("امتیاز ارزش نسبی (حباب)", 0.0))
+                lev_sc = float(row_item.get("امتیاز اهرم", 0.0))
                 dte_sc = float(row_item.get("امتیاز تناسب DTE", 0.0))
                 why_expl = str(row_item.get("چرا این امتیاز", ""))
 
@@ -1155,7 +1163,7 @@ with tab2:
                                 <div style="display:flex; align-items:center; gap:10px;">
                                     {u_rank_html}
                                     <div style="font-size:22px; font-weight:bold; color:{'#10B981' if is_call_type else '#F43F5E'};">
-                                        امتیاز: {final_sc} <span style="font-size:13px; font-weight:normal;" class="card-text-muted">از ۱۰۰</span>
+                                        امتیاز: {final_sc_display} <span style="font-size:13px; font-weight:normal;" class="card-text-muted">از ۱۰۰</span>
                                     </div>
                                 </div>
                             </div>
@@ -1179,20 +1187,29 @@ with tab2:
                                 </div>
                                 <div class="subscore-item">
                                     <div class="subscore-label">
-                                        <span title="ساختاری ۱۸٪: {struct_liq} | جهش ۱۲٪: {spike_liq}">نقدینگی ترکیبی (۳۰٪)</span>
-                                        <b>{comb_liq_sc:.1f}</b>
-                                    </div>
-                                    <div class="mini-bar-track">
-                                        <div class="{fill_class}" style="width: {min(max(comb_liq_sc, 0.0), 100.0)}%;"></div>
-                                    </div>
-                                </div>
-                                <div class="subscore-item">
-                                    <div class="subscore-label">
-                                        <span>ارزش نسبی / حباب (۳۰٪)</span>
+                                        <span>ارزش نسبی / حباب (۲۰٪)</span>
                                         <b>{rel_val_sc:.1f}</b>
                                     </div>
                                     <div class="mini-bar-track">
                                         <div class="{fill_class}" style="width: {min(max(rel_val_sc, 0.0), 100.0)}%;"></div>
+                                    </div>
+                                </div>
+                                <div class="subscore-item">
+                                    <div class="subscore-label">
+                                        <span>اهرم (۱۵٪)</span>
+                                        <b>{lev_sc:.1f}</b>
+                                    </div>
+                                    <div class="mini-bar-track">
+                                        <div class="{fill_class}" style="width: {min(max(lev_sc, 0.0), 100.0)}%;"></div>
+                                    </div>
+                                </div>
+                                <div class="subscore-item">
+                                    <div class="subscore-label">
+                                        <span title="ساختاری ۱۵٪: {struct_liq:.1f} | جهش ۱۰٪: {spike_liq:.1f}">نقدینگی ترکیبی (۲۵٪)</span>
+                                        <b>{comb_liq_sc:.1f}</b>
+                                    </div>
+                                    <div class="mini-bar-track">
+                                        <div class="{fill_class}" style="width: {min(max(comb_liq_sc, 0.0), 100.0)}%;"></div>
                                     </div>
                                 </div>
                                 <div class="subscore-item">
@@ -1217,8 +1234,9 @@ with tab2:
                     with st.expander(f"📊 مشاهده نمودار راداری توازن ({sym})"):
                         fig_radar = create_spider_chart(
                             readiness=read_sc,
-                            liquidity=comb_liq_sc,
                             relative_val=rel_val_sc,
+                            leverage=lev_sc,
+                            liquidity=comb_liq_sc,
                             dte_suit=dte_sc,
                             is_call=is_call_type,
                             dark_mode=is_dark,

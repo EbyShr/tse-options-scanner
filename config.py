@@ -35,15 +35,16 @@ class ScoringWeightsConfig:
 @dataclass
 class UnifiedWeightsConfig:
     underlying_readiness: float = 0.25
-    combined_liquidity: float = 0.30
-    relative_value: float = 0.30
+    relative_value: float = 0.20
+    leverage: float = 0.15
+    combined_liquidity: float = 0.25
     dte_suitability: float = 0.15
 
 
 @dataclass
 class LiquidityBreakdownConfig:
-    structural_weight: float = 0.18
-    spike_weight: float = 0.12
+    structural_weight: float = 0.15
+    spike_weight: float = 0.10
 
 
 @dataclass

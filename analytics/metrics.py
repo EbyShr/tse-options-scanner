@@ -94,7 +94,7 @@ def process_options_dataframe(
         if is_invalid_bsm or is_invalid_delta or (bsm_price < min_bsm_price) or (abs(delta) < min_delta):
             is_deep_otm = True
             bubble_score_raw = None
-            deep_otm_label = "اختیار عمیقاً بی‌ارزش / سفته‌بازی صرف"
+            deep_otm_label = "لاتاری/بی‌ارزش عمیق"
             bubble_rial = round(market_price - (bsm_price if (not is_invalid_bsm and bsm_price is not None) else 0.0))
         else:
             is_deep_otm = False
@@ -256,15 +256,26 @@ def process_options_dataframe(
             df_res.loc[valid_b_mask, "جذابیت حباب (معکوس)"] = 50.0
 
         # رتبه‌بندی نقدینگی بر اساس ارزش معامله و تعداد معاملات
-        # ترکیب نرمال‌شده ارزش و تعداد معامله
         val_ranks = rankdata(df_res["ارزش معاملات امروز (ریال)"], method="average")
         trade_ranks = rankdata(df_res["تعداد معاملات امروز"], method="average")
         combined_liq_rank = 0.7 * (val_ranks / n_items) + 0.3 * (trade_ranks / n_items)
         df_res["رتبه صدکی نقدینگی"] = np.round(combined_liq_rank * 100.0, 1)
 
-        # رتبه‌بندی اهرم: هرچه اهرم بالاتر باشد امتیاز بیشتر
-        lev_ranks = rankdata(df_res["اهرم"], method="average")
-        df_res["رتبه صدکی اهرم"] = np.round((lev_ranks / n_items) * 100.0, 1)
+        # رتبه‌بندی اهرم (جزء مستقل جدید ۱۵٪ - بخش ۱.۳):
+        # فقط روی قراردادهایی که Deep OTM نیستند و امروز حداقل ۱ معامله داشته‌اند
+        eligible_lev_mask = (
+            (~df_res["عمیقاً بی‌ارزش"])
+            & (df_res["تعداد معاملات امروز"] > 0)
+            & (df_res["اهرم"].notna())
+            & (df_res["اهرم"] > 0)
+        )
+        n_lev = int(eligible_lev_mask.sum())
+        df_res["رتبه صدکی اهرم"] = 0.0
+        if n_lev > 1:
+            lev_ranks = rankdata(df_res.loc[eligible_lev_mask, "اهرم"], method="average")
+            df_res.loc[eligible_lev_mask, "رتبه صدکی اهرم"] = np.round((lev_ranks / n_lev) * 100.0, 1)
+        elif n_lev == 1:
+            df_res.loc[eligible_lev_mask, "رتبه صدکی اهرم"] = 50.0
 
     else:
         df_res["رتبه صدکی حباب"] = 50.0
@@ -273,7 +284,7 @@ def process_options_dataframe(
         df_res["رتبه صدکی اهرم"] = 50.0
 
     # =========================================================================
-    # ۸. محاسبه امتیاز الگوریتم واحد (calculate_score) برای تک‌تک قراردادها
+    # ۸. محاسبه امتیاز الگوریتم واحد (calculate_score) نسخه v3 برای تک‌تک قراردادها
     # =========================================================================
     from analytics.unified_scoring import calculate_score
 
@@ -288,9 +299,11 @@ def process_options_dataframe(
     struct_liq_list = []
     spike_liq_list = []
     rel_val_list = []
+    lev_score_list = []
     dte_list = []
     pass_hard_list = []
     explanations = []
+    gate_mult_list = []
 
     for idx, (_, r) in enumerate(df_res.iterrows()):
         res = calculate_score(
@@ -298,6 +311,7 @@ def process_options_dataframe(
             structural_liq_pct=structural_pcts[idx],
             bubble_pct_rank=df_res["رتبه صدکی حباب"].iloc[idx],
             config=config,
+            leverage_pct_rank=df_res["رتبه صدکی اهرم"].iloc[idx],
         )
         scores.append(res["final_score"])
         readiness_list.append(res["readiness_score"])
@@ -305,9 +319,11 @@ def process_options_dataframe(
         struct_liq_list.append(res["structural_liquidity_score"])
         spike_liq_list.append(res["spike_liquidity_score"])
         rel_val_list.append(res["relative_value_score"])
+        lev_score_list.append(res["leverage_score"])
         dte_list.append(res["dte_suitability_score"])
         pass_hard_list.append(res["passes_hard_filter"])
         explanations.append(res["explanation"])
+        gate_mult_list.append(res["liquidity_gate_multiplier"])
 
     df_res["امتیاز الگوریتم"] = scores
     df_res["امتیاز ترکیبی"] = scores
@@ -316,13 +332,15 @@ def process_options_dataframe(
     df_res["امتیاز نقدینگی ساختاری"] = struct_liq_list
     df_res["امتیاز جهش لحظه‌ای"] = spike_liq_list
     df_res["امتیاز ارزش نسبی (حباب)"] = rel_val_list
+    df_res["امتیاز اهرم"] = lev_score_list
     df_res["امتیاز تناسب DTE"] = dte_list
     df_res["واجد فیلتر سخت"] = pass_hard_list
     df_res["چرا این امتیاز"] = explanations
     df_res["شرح فرمول امتیاز"] = explanations
+    df_res["ضریب دروازه نقدینگی"] = gate_mult_list
 
-    # مرتب‌سازی اصلی بر اساس بیشترین امتیاز الگوریتم
-    df_res = df_res.sort_values("امتیاز الگوریتم", ascending=False).reset_index(drop=True)
-    logger.info(f"پردازش متریک‌ها به اتمام رسید. مجموع {len(df_res)} نماد ارزش‌گذاری و با الگوریتم واحد رتبه‌بندی شدند.")
+    # مرتب‌سازی اصلی بر اساس بیشترین امتیاز الگوریتم (قراردادهای بدون امتیاز/Deep OTM در انتها)
+    df_res = df_res.sort_values("امتیاز الگوریتم", ascending=False, na_position="last").reset_index(drop=True)
+    logger.info(f"پردازش متریک‌ها به اتمام رسید. مجموع {len(df_res)} نماد با الگوریتم واحد نسخه v3 رتبه‌بندی شدند.")
 
     return df_res

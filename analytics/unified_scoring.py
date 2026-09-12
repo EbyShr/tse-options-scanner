@@ -1,13 +1,12 @@
 """
 ماژول الگوریتم امتیازدهی واحد، جامع و نامتقارن اسکنر آپشن بورس تهران (Unified Scoring System)
-نسخه نهایی پچ v2 (اصلاح وزن‌دهی و سقف تنوع نماد):
-- وزن‌های ۲۵/۳۰/۳۰/۱۵ (آمادگی پایه ۲۵٪، نقدینگی ۳۰٪، ارزش نسبی ۳۰٪، تناسب سررسید ۱۵٪)
+نسخه نهایی v3:
+- وزن‌های ۲۵/۲۰/۱۵/۲۵/۱۵ (آمادگی پایه ۲۵٪، حباب ۲۰٪، اهرم ۱۵٪، نقدینگی ترکیبی ۲۵٪، تناسب سررسید ۱۵٪)
+- دروازه نقدینگی ضربی (Liquidity Gate) با جریمه ۸۵٪ برای معاملات صفر و نقدینگی < ۱۵، و کاهش نرم برای نقدینگی < ۴۰
+- اهرم به عنوان جزء مستقل جدید (۱۵٪) محاسبه‌شده به صورت رتبه صدکی میان قراردادهای واجد شرایط روز
+- دروازه مهار کامل Deep OTM / لاتاری (BSM < ۱۰ یا دلتا < ۰.۱۰): خروج کامل از Top 10، صفر شدن امتیاز اهرم و حباب، برچسب 'لاتاری/بی‌ارزش عمیق' و امتیاز N/A
 - سقف تنوع دارایی پایه در انتخاب نهایی Top 10 (select_top_n_diversified با پیش‌فرض ۳)
-- فرمول دقیق سقف‌دار جهش نقدینگی: min(momentum_ratio / 3.0, 1.0) * 100
-- ایمن‌سازی کامل برابر داده‌های NaN/None در BSM و دلتا
-- تفکیک آستانه فیلتر سخت Call (۵۰۰ م.ت و ۳۰ معامله) و Put (۱۰۰ م.ت و ۱۰ معامله)
-- منطق نامتقارن ۴ مؤلفه‌ای آمادگی پایه (میانگین وزنی مساوی ۲۵٪ از ۱۰۰)
-- سقف ضد-Chasing با فالبک هوشمند ۱ روزه (آستانه ۵٪)
+- پیشنهاد نمادهای جایگزین هم‌نام (Sister Contracts)
 """
 
 import logging
@@ -281,21 +280,23 @@ def calculate_combined_liquidity_score(
     structural_pct: float,
     today_volume: float,
     avg_5d_volume: float,
-    config: AppConfig,
+    config: Optional[AppConfig] = None,
 ) -> Tuple[float, float, float]:
     """
-    محاسبه امتیاز نقدینگی ترکیبی (۳۰٪ کل):
-    - نقدینگی ساختاری (۱۸٪ سهم کل): رتبه صدکی میانگین ۵ روزه ارزش و تعداد معاملات
-    - جهش لحظه‌ای (۱۲٪ سهم کل): فرمول مصوب شورا:
+    محاسبه امتیاز نقدینگی ترکیبی (۲۵٪ کل):
+    - نقدینگی ساختاری (۱۵٪ سهم کل، معادل ۶۰٪ نمره نقدینگی)
+    - جهش لحظه‌ای (۱۰٪ سهم کل، معادل ۴۰٪ نمره نقدینگی):
         momentum_ratio = today_volume / max(avg_5d_volume, 1)
         liquidity_spike_score = min(momentum_ratio / 3.0, 1.0) * 100
         (نسبت ۳ برابر یا بیشتر معادل امتیاز کامل ۱۰۰)
+    فرمول مصوب نسخه v3:
+        liquidity_score = structural_score * 0.60 + spike_score * 0.40
     خروجی: (امتیاز کل نقدینگی از ۱۰۰, امتیاز ساختاری از ۱۰۰, امتیاز جهش از ۱۰۰)
     """
-    liq_cfg = config.unified_scoring.liquidity_breakdown
-    w_struct = liq_cfg.structural_weight  # 0.18
-    w_spike = liq_cfg.spike_weight       # 0.12
-    total_w = w_struct + w_spike         # 0.30
+    liq_cfg = getattr(config.unified_scoring, "liquidity_breakdown", None) if config and hasattr(config, "unified_scoring") else None
+    w_struct = getattr(liq_cfg, "structural_weight", 0.15) if liq_cfg else 0.15
+    w_spike = getattr(liq_cfg, "spike_weight", 0.10) if liq_cfg else 0.10
+    total_w = w_struct + w_spike
 
     structural_score = float(structural_pct)
 
@@ -304,9 +305,13 @@ def calculate_combined_liquidity_score(
     momentum_ratio = float(today_volume) / safe_avg
     spike_score = round(min(momentum_ratio / 3.0, 1.0) * 100.0, 1)
 
-    combined_score = round(
-        (structural_score * w_struct + spike_score * w_spike) / total_w, 1
-    )
+    if total_w > 0:
+        combined_score = round(
+            (structural_score * w_struct + spike_score * w_spike) / total_w, 1
+        )
+    else:
+        combined_score = round(structural_score * 0.60 + spike_score * 0.40, 1)
+
     return combined_score, structural_score, spike_score
 
 
@@ -315,11 +320,12 @@ def calculate_score(
     structural_liq_pct: float,
     bubble_pct_rank: Optional[float],
     config: AppConfig,
+    leverage_pct_rank: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    تابع واحد و ایمن امتیازدهی اسکنر آپشن (Calculate Score)
-    ورودی: ردیف قرارداد، رتبه صدکی ساختاری ۵ روزه، رتبه صدکی حباب، و کانفیگ سیستم.
-    خروجی: دیکشنری شامل امتیاز نهایی (۰ تا ۱۰۰)، ۴ زیرامتیاز، دلایل و وضعیت فیلتر سخت تفکیک‌شده Call/Put.
+    تابع واحد و ایمن امتیازدهی اسکنر آپشن (نسخه v3)
+    ورودی: ردیف قرارداد، رتبه صدکی ساختاری ۵ روزه، رتبه صدکی حباب، رتبه صدکی اهرم، و کانفیگ سیستم.
+    خروجی: دیکشنری شامل امتیاز نهایی (۰ تا ۱۰۰)، ۵ زیرامتیاز، وضعیت دروازه نقدینگی، دلایل و وضعیت فیلتر سخت تفکیک‌شده Call/Put.
     ایمن در برابر مقادیر NaN یا داده خراب.
     """
     opt_type_raw = str(row.get("نوع قرارداد", "")).lower()
@@ -330,7 +336,7 @@ def calculate_score(
         row, is_call, config
     )
 
-    # ۲. نقدینگی ترکیبی (۳۰٪) با فرمول مصوب شورا
+    # ۲. نقدینگی ترکیبی (۲۵٪: ۱۵٪ پایدار + ۱۰٪ جهش)
     val_today = float(row.get("ارزش معاملات امروز (ریال)", 0.0))
     avg_5d = float(row.get("میانگین ارزش ۵ روزه (ریال)", 0.0))
     comb_liq_score, struct_score, spike_score = calculate_combined_liquidity_score(
@@ -340,10 +346,9 @@ def calculate_score(
         config=config,
     )
 
-    # ۳. ارزش نسبی / حباب BSM (۳۰٪) — ایمن‌سازی کامل خطای NaN و Deep OTM
+    # ۳. فیلتر و دروازه Deep-OTM / لاتاری (بخش ۱.۱)
+    # اگر BSM < 10 ریال یا دلتای تخمینی < 0.10 یا نامعتبر/NaN/None
     is_deep_otm = bool(row.get("عمیقاً بی‌ارزش", False))
-
-    # بررسی مقادیر BSM و دلتا: در صورت نامعتبر، NaN، None بودن یا زیر آستانه، قرارداد Deep OTM محسوب می‌شود
     if "قیمت تئوریک BSM" in row:
         bsm_val = row.get("قیمت تئوریک BSM")
         if bsm_val is None or pd.isna(bsm_val):
@@ -366,12 +371,24 @@ def calculate_score(
             except (ValueError, TypeError):
                 is_deep_otm = True
 
+    trade_count = int(row.get("تعداد معاملات امروز", 0))
+
     if is_deep_otm:
+        # اعمال گیت ۱.۱: هر دو جزء ارزش نسبی و اهرم صفر می‌شوند
         rel_val_score = 0.0
-    elif bubble_pct_rank is None or np.isnan(bubble_pct_rank):
-        rel_val_score = 50.0
+        leverage_score = 0.0
     else:
-        rel_val_score = round(max(0.0, min(100.0, 100.0 - float(bubble_pct_rank))), 1)
+        # ارزش نسبی / حباب BSM (۲۰٪)
+        if bubble_pct_rank is None or np.isnan(bubble_pct_rank):
+            rel_val_score = 50.0
+        else:
+            rel_val_score = round(max(0.0, min(100.0, 100.0 - float(bubble_pct_rank))), 1)
+
+        # اهرم (۱۵٪): رتبه صدکی فقط روی قراردادهای واجد شرایط و دارای حداقل ۱ معامله امروز
+        if trade_count == 0 or leverage_pct_rank is None or np.isnan(leverage_pct_rank):
+            leverage_score = 0.0
+        else:
+            leverage_score = round(max(0.0, min(100.0, float(leverage_pct_rank))), 1)
 
     # ۴. تناسب DTE (۱۵٪)
     dte = float(row.get("روزهای تا سررسید (DTE)", 0.0))
@@ -381,33 +398,59 @@ def calculate_score(
         opt_max=config.unified_scoring.dte_curve.optimal_max,
     )
 
-    # ۵. ترکیب با وزن‌های نهایی (مجموع ۱۰۰٪)
+    # ۵. ترکیب با وزن‌های جدید نسخه v3 (مجموع ۱۰۰٪)
     w = config.unified_scoring.weights
-    final_score = round(
-        readiness_score * w.underlying_readiness
-        + comb_liq_score * w.combined_liquidity
-        + rel_val_score * w.relative_value
-        + dte_score * w.dte_suitability,
-        1,
+    w_readiness = getattr(w, "underlying_readiness", 0.25)
+    w_rel_val = getattr(w, "relative_value", 0.20)
+    w_leverage = getattr(w, "leverage", 0.15)
+    w_liq = getattr(w, "combined_liquidity", 0.25)
+    w_dte = getattr(w, "dte_suitability", 0.15)
+
+    raw_final_score = (
+        readiness_score * w_readiness
+        + rel_val_score * w_rel_val
+        + leverage_score * w_leverage
+        + comb_liq_score * w_liq
+        + dte_score * w_dte
     )
 
-    # ۶. بررسی واجد شرایط بودن فیلتر سخت تفکیک‌شده Call و Put (Hard Exclusion)
-    hard = config.unified_scoring.hard_filter
-    trade_count = int(row.get("تعداد معاملات امروز", 0))
-
-    if is_call:
-        min_val = getattr(getattr(hard, "call", None), "min_trade_value_rials", hard.min_trade_value_rials)
-        min_trades = getattr(getattr(hard, "call", None), "min_trade_count", hard.min_trade_count)
+    # ۶. دروازه نقدینگی ضربی (Liquidity Gate - بخش ۱.۲)
+    gate_multiplier = 1.0
+    gate_label = "عادی"
+    if trade_count == 0 or comb_liq_score < 15.0:
+        gate_multiplier = 0.15
+        gate_label = "جریمه شدید نقدینگی (۰.۱۵x)"
+        penalized_score = raw_final_score * 0.15
+    elif comb_liq_score < 40.0:
+        gate_multiplier = round(0.5 + (comb_liq_score / 200.0), 3)
+        gate_label = f"کاهش نرم نقدینگی ({gate_multiplier:.2f}x)"
+        penalized_score = raw_final_score * gate_multiplier
     else:
-        min_val = getattr(getattr(hard, "put", None), "min_trade_value_rials", 1_000_000_000.0)
-        min_trades = getattr(getattr(hard, "put", None), "min_trade_count", 10)
+        penalized_score = raw_final_score
 
-    passes_hard_filter = bool(
-        val_today >= min_val
-        and trade_count >= min_trades
-        and dte >= hard.min_dte
-        and not is_deep_otm
-    )
+    final_numeric_score = round(penalized_score, 1)
+
+    # بخش ۱.۱: قرارداد Deep OTM کاملاً از Top 10 خارج شده و ستون امتیاز آن N/A است
+    if is_deep_otm:
+        final_score_output = None
+        passes_hard_filter = False
+    else:
+        final_score_output = final_numeric_score
+        hard = config.unified_scoring.hard_filter
+        if is_call:
+            min_val = getattr(getattr(hard, "call", None), "min_trade_value_rials", hard.min_trade_value_rials)
+            min_trades = getattr(getattr(hard, "call", None), "min_trade_count", hard.min_trade_count)
+        else:
+            min_val = getattr(getattr(hard, "put", None), "min_trade_value_rials", 1_000_000_000.0)
+            min_trades = getattr(getattr(hard, "put", None), "min_trade_count", 10)
+
+        passes_hard_filter = bool(
+            val_today >= min_val
+            and trade_count >= min_trades
+            and trade_count > 0
+            and dte >= hard.min_dte
+            and not is_deep_otm
+        )
 
     # دلایل کلی
     reasons_all = list(reasons_readiness)
@@ -418,7 +461,9 @@ def calculate_score(
         val_str = f"{round(val_tomans)} میلیون تومان"
 
     if is_deep_otm:
-        reasons_all.insert(0, "اختیار عمیقاً بی‌ارزش (خارج از پیشنهادهای ورود)")
+        reasons_all.insert(0, "لاتاری/بی‌ارزش عمیق (خارج از پیشنهادهای ورود)")
+    elif trade_count == 0:
+        reasons_all.insert(0, "فاقد معامله امروز (جریمه بازدارنده دروازه نقدینگی)")
     elif spike_score >= 80:
         reasons_all.insert(0, f"جهش نقدینگی لحظه‌ای مطلوب ({val_str})")
     elif comb_liq_score >= 70:
@@ -426,30 +471,44 @@ def calculate_score(
     else:
         reasons_all.insert(0, f"ارزش معاملات {val_str}")
 
-    if rel_val_score >= 80:
-        reasons_all.append("قیمت‌گذاری منصفانه نسبت به ارزش تئوریک BSM")
-    elif rel_val_score >= 50:
-        reasons_all.append("حباب قیمتی در دامنه معقول بازار")
+    if not is_deep_otm:
+        if rel_val_score >= 80:
+            reasons_all.append("قیمت‌گذاری منصفانه نسبت به ارزش تئوریک BSM")
+        elif rel_val_score >= 50:
+            reasons_all.append("حباب قیمتی در دامنه معقول بازار")
 
-    if dte_score >= 95:
-        reasons_all.append(f"بازه سررسید بهینه ({int(dte)} روز)")
-    else:
-        reasons_all.append(f"سررسید {int(dte)} روزه")
+        lev_val = row.get("اهرم", 0.0)
+        lev_num = float(lev_val) if pd.notna(lev_val) and lev_val is not None else 0.0
+        if leverage_score >= 80:
+            reasons_all.append(f"اهرم موثر و پیشتاز ({lev_num:.1f}x)")
+        elif leverage_score >= 50:
+            reasons_all.append(f"اهرم متعادل ({lev_num:.1f}x)")
+
+        if dte_score >= 95:
+            reasons_all.append(f"بازه سررسید بهینه ({int(dte)} روز)")
+        else:
+            reasons_all.append(f"سررسید {int(dte)} روزه")
 
     explanation_text = "؛ ".join(reasons_all[:4]) + "."
 
     return {
-        "final_score": final_score,
+        "final_score": final_score_output,
+        "final_score_num": final_numeric_score if not is_deep_otm else 0.0,
+        "raw_final_score": round(raw_final_score, 1),
         "readiness_score": readiness_score,
         "combined_liquidity_score": comb_liq_score,
         "structural_liquidity_score": struct_score,
         "spike_liquidity_score": spike_score,
         "relative_value_score": rel_val_score,
+        "leverage_score": leverage_score,
         "dte_suitability_score": dte_score,
         "passes_hard_filter": passes_hard_filter,
         "explanation": explanation_text,
         "reasons": reasons_all,
         "is_deep_otm": is_deep_otm,
+        "deep_otm_label": "لاتاری/بی‌ارزش عمیق" if is_deep_otm else "",
+        "liquidity_gate_multiplier": gate_multiplier,
+        "liquidity_gate_label": gate_label,
     }
 
 
@@ -592,64 +651,106 @@ def compute_top_call_and_put(
         empty_res = {"call_warning": False, "put_warning": False, "call_sym": None, "put_sym": None}
         return pd.DataFrame(), pd.DataFrame(), empty_res
 
-    logger.info("در حال استخراج لیست‌های ۱۰تایی برتر Call و Put بر اساس نسخه نهایی پچ v2...")
+    logger.info("در حال استخراج لیست‌های ۱۰تایی برتر Call و Put بر اساس نسخه v3 الگوریتم...")
 
-    # محاسبه رتبه صدکی نقدینگی ساختاری ۵ روزه و حباب برای کل جدول
-    n = len(df_all)
-    avg_5d_ranks = rankdata(df_all["میانگین ارزش ۵ روزه (ریال)"], method="average")
-    trade_ranks = rankdata(df_all["تعداد معاملات امروز"], method="average")
-    structural_pcts = ((avg_5d_ranks / n) * 0.70 + (trade_ranks / n) * 0.30) * 100.0
+    has_precalculated = (
+        "امتیاز الگوریتم" in df_all.columns
+        and "امتیاز اهرم" in df_all.columns
+        and "واجد فیلتر سخت" in df_all.columns
+    )
 
-    valid_b_mask = df_all["حباب خام (%)"].notna() & (~df_all.get("عمیقاً بی‌ارزش", False))
-    n_valid = int(valid_b_mask.sum())
-    bubble_pct_series = pd.Series(index=df_all.index, dtype=float)
-    if n_valid > 1:
-        b_ranks = rankdata(df_all.loc[valid_b_mask, "حباب خام (%)"], method="average")
-        bubble_pct_series.loc[valid_b_mask] = (b_ranks / n_valid) * 100.0
-    elif n_valid == 1:
-        bubble_pct_series.loc[valid_b_mask] = 50.0
+    if has_precalculated:
+        df_scored = df_all.copy()
+    else:
+        # محاسبه رتبه صدکی نقدینگی ساختاری ۵ روزه، حباب و اهرم برای کل جدول
+        n = len(df_all)
+        avg_5d_series = df_all["میانگین ارزش ۵ روزه (ریال)"] if "میانگین ارزش ۵ روزه (ریال)" in df_all.columns else pd.Series(0.0, index=df_all.index)
+        trades_series = df_all["تعداد معاملات امروز"] if "تعداد معاملات امروز" in df_all.columns else pd.Series(0, index=df_all.index)
+        avg_5d_ranks = rankdata(avg_5d_series, method="average")
+        trade_ranks = rankdata(trades_series, method="average")
+        structural_pcts = ((avg_5d_ranks / n) * 0.70 + (trade_ranks / n) * 0.30) * 100.0
 
-    # ارزیابی تک‌تک قراردادها با calculate_score
-    scores = []
-    readiness_list = []
-    liq_list = []
-    struct_liq_list = []
-    spike_liq_list = []
-    rel_val_list = []
-    dte_list = []
-    pass_hard_list = []
-    explanations = []
+        deep_mask = df_all["عمیقاً بی‌ارزش"] if "عمیقاً بی‌ارزش" in df_all.columns else pd.Series(False, index=df_all.index)
+        bub_series = df_all["حباب خام (%)"] if "حباب خام (%)" in df_all.columns else pd.Series(np.nan, index=df_all.index)
+        valid_b_mask = bub_series.notna() & (~deep_mask)
+        n_valid = int(valid_b_mask.sum())
+        bubble_pct_series = pd.Series(index=df_all.index, dtype=float)
+        if n_valid > 1:
+            b_ranks = rankdata(bub_series.loc[valid_b_mask], method="average")
+            bubble_pct_series.loc[valid_b_mask] = (b_ranks / n_valid) * 100.0
+        elif n_valid == 1:
+            bubble_pct_series.loc[valid_b_mask] = 50.0
 
-    for idx, (_, row) in enumerate(df_all.iterrows()):
-        res = calculate_score(
-            row=row,
-            structural_liq_pct=structural_pcts[idx],
-            bubble_pct_rank=bubble_pct_series.iloc[idx],
-            config=config,
+        # رتبه‌بندی صدکی اهرم (فقط روی قراردادهای غیر Deep OTM و دارای معامله امروز)
+        lev_series = df_all["اهرم"] if "اهرم" in df_all.columns else pd.Series(0.0, index=df_all.index)
+        eligible_lev_mask = (
+            (~deep_mask)
+            & (trades_series > 0)
+            & (lev_series.notna())
+            & (lev_series > 0)
         )
-        scores.append(res["final_score"])
-        readiness_list.append(res["readiness_score"])
-        liq_list.append(res["combined_liquidity_score"])
-        struct_liq_list.append(res["structural_liquidity_score"])
-        spike_liq_list.append(res["spike_liquidity_score"])
-        rel_val_list.append(res["relative_value_score"])
-        dte_list.append(res["dte_suitability_score"])
-        pass_hard_list.append(res["passes_hard_filter"])
-        explanations.append(res["explanation"])
+        n_lev_valid = int(eligible_lev_mask.sum())
+        leverage_pct_series = pd.Series(index=df_all.index, dtype=float).fillna(0.0)
+        if n_lev_valid > 1:
+            lev_ranks = rankdata(lev_series.loc[eligible_lev_mask], method="average")
+            leverage_pct_series.loc[eligible_lev_mask] = (lev_ranks / n_lev_valid) * 100.0
+        elif n_lev_valid == 1:
+            leverage_pct_series.loc[eligible_lev_mask] = 50.0
 
-    df_scored = df_all.copy()
-    df_scored["امتیاز الگوریتم"] = scores
-    df_scored["امتیاز آمادگی پایه"] = readiness_list
-    df_scored["امتیاز نقدینگی ترکیبی"] = liq_list
-    df_scored["امتیاز نقدینگی ساختاری"] = struct_liq_list
-    df_scored["امتیاز جهش لحظه‌ای"] = spike_liq_list
-    df_scored["امتیاز ارزش نسبی (حباب)"] = rel_val_list
-    df_scored["امتیاز تناسب DTE"] = dte_list
-    df_scored["واجد فیلتر سخت"] = pass_hard_list
-    df_scored["چرا این امتیاز"] = explanations
+        # ارزیابی تک‌تک قراردادها با calculate_score
+        scores = []
+        readiness_list = []
+        liq_list = []
+        struct_liq_list = []
+        spike_liq_list = []
+        rel_val_list = []
+        lev_score_list = []
+        dte_list = []
+        pass_hard_list = []
+        explanations = []
+        gate_mults = []
+
+        for idx, (_, row) in enumerate(df_all.iterrows()):
+            res = calculate_score(
+                row=row,
+                structural_liq_pct=structural_pcts[idx],
+                bubble_pct_rank=bubble_pct_series.iloc[idx],
+                config=config,
+                leverage_pct_rank=leverage_pct_series.iloc[idx],
+            )
+            scores.append(res["final_score"])
+            readiness_list.append(res["readiness_score"])
+            liq_list.append(res["combined_liquidity_score"])
+            struct_liq_list.append(res["structural_liquidity_score"])
+            spike_liq_list.append(res["spike_liquidity_score"])
+            rel_val_list.append(res["relative_value_score"])
+            lev_score_list.append(res["leverage_score"])
+            dte_list.append(res["dte_suitability_score"])
+            pass_hard_list.append(res["passes_hard_filter"])
+            explanations.append(res["explanation"])
+            gate_mults.append(res["liquidity_gate_multiplier"])
+
+        df_scored = df_all.copy()
+        df_scored["امتیاز الگوریتم"] = scores
+        df_scored["امتیاز آمادگی پایه"] = readiness_list
+        df_scored["امتیاز نقدینگی ترکیبی"] = liq_list
+        df_scored["امتیاز نقدینگی ساختاری"] = struct_liq_list
+        df_scored["امتیاز جهش لحظه‌ای"] = spike_liq_list
+        df_scored["امتیاز ارزش نسبی (حباب)"] = rel_val_list
+        df_scored["امتیاز اهرم"] = lev_score_list
+        df_scored["امتیاز تناسب DTE"] = dte_list
+        df_scored["واجد فیلتر سخت"] = pass_hard_list
+        df_scored["چرا این امتیاز"] = explanations
+        df_scored["ضریب دروازه نقدینگی"] = gate_mults
 
     # فیلتر سخت: فقط قراردادهای واجد شرایط وارد لیست‌های برتر می‌شوند
-    df_eligible = df_scored[df_scored["واجد فیلتر سخت"]].copy()
+    # تضمین ۱۰۰٪ عدم ورود قراردادهای Deep OTM، صفر معامله یا بدون امتیاز معتبر
+    df_eligible = df_scored[
+        (df_scored["واجد فیلتر سخت"] == True)
+        & (~df_scored.get("عمیقاً بی‌ارزش", False))
+        & (df_scored.get("تعداد معاملات امروز", 0) > 0)
+        & (df_scored["امتیاز الگوریتم"].notna())
+    ].copy()
 
     # تفکیک Call و Put
     is_call_series = df_eligible["نوع قرارداد"].str.contains("Call|خرید", case=False, na=False) | df_eligible["نماد"].str.startswith("ض")

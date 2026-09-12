@@ -254,12 +254,15 @@ class TestOptionScanner(unittest.TestCase):
         self.assertTrue(row["عمیقاً بی‌ارزش"])
         self.assertIsNone(row["حباب خام (%)"])
         self.assertGreater(row["حباب ریالی"], 0)
-        self.assertEqual(row["برچسب سفته‌بازی"], "اختیار عمیقاً بی‌ارزش / سفته‌بازی صرف")
+        self.assertEqual(row["برچسب سفته‌بازی"], "لاتاری/بی‌ارزش عمیق")
 
-        # بررسی خروج از فیلتر سخت در calculate_score
+        # بررسی خروج از فیلتر سخت در calculate_score و امتیاز None
         score_dict = calculate_score(row, structural_liq_pct=80.0, bubble_pct_rank=None, config=config)
         self.assertFalse(score_dict["passes_hard_filter"])
         self.assertEqual(score_dict["relative_value_score"], 0.0)
+        self.assertEqual(score_dict["leverage_score"], 0.0)
+        self.assertIsNone(score_dict["final_score"])
+        self.assertEqual(score_dict["final_score_num"], 0.0)
 
     def test_anti_chasing_penalty(self):
         """تست اعمال ضریب کاهشی ۰.۷ ضد-Chasing در عبور از ۹۰٪ سقف حرکت ۳ روزه (عادی ۸.۳۵٪ و اهرمی ۱۱.۲۴٪)"""
@@ -559,7 +562,10 @@ class TestOptionScanner(unittest.TestCase):
         config = AppConfig()
         self.assertEqual(config.unified_scoring.max_per_underlying, 3)
         self.assertEqual(config.unified_scoring.weights.underlying_readiness, 0.25)
-        self.assertEqual(config.unified_scoring.weights.relative_value, 0.30)
+        self.assertEqual(config.unified_scoring.weights.relative_value, 0.20)
+        self.assertEqual(config.unified_scoring.weights.leverage, 0.15)
+        self.assertEqual(config.unified_scoring.weights.combined_liquidity, 0.25)
+        self.assertEqual(config.unified_scoring.weights.dte_suitability, 0.15)
 
         # ایجاد دیتاستی با ۵ قرارداد واجد شرایط اهرم و ۲ قرارداد واجد شرایط خودرو
         rows = []
@@ -866,8 +872,8 @@ class TestOptionScanner(unittest.TestCase):
         # نباید کرش کند، باید زیرامتیاز ارزش نسبی صفر و خارج از فیلتر سخت شود
         res_nan = calculate_score(row_nan, structural_liq_pct=60.0, bubble_pct_rank=None, config=config)
         self.assertFalse(res_nan["passes_hard_filter"])
-        self.assertEqual(res_nan["relative_value_score"], 0.0)
-        self.assertGreaterEqual(res_nan["final_score"], 0.0)
+        self.assertIsNone(res_nan["final_score"])
+        self.assertEqual(res_nan["final_score_num"], 0.0)
 
     def test_get_sister_contracts(self):
         """تست استخراج نمادهای جایگزین همنام (Sister Contracts) معتبر با حداکثر ۲ نماد"""
@@ -1094,6 +1100,127 @@ class TestOptionScanner(unittest.TestCase):
         config = load_config()
         self.assertTrue(hasattr(config.output, "export_top_choices_csv"))
         self.assertTrue(config.output.export_top_choices_csv)
+
+    def test_v3_scoring_algorithm_features(self):
+        """تست جامع ویژگی‌های جدید نسخه v3: دروازه نقدینگی ضربی، رتبه‌بندی اهرم صدکی و حذف Deep OTM"""
+        from analytics.unified_scoring import calculate_score, compute_top_call_and_put
+        from reports.csv_exporter import create_top_choices_overview_df
+        config = AppConfig()
+
+        # ۱. تست دروازه نقدینگی ضربی:
+        # حالت الف: معاملات امروز = ۰ (باید جریمه ۰.۱۵x اعمال شود حتی اگر نقدینگی ساختاری داشته باشد)
+        row_zero_trades = pd.Series({
+            "نماد": "ضاهرم_صفر_معامله",
+            "دارایی پایه": "اهرم",
+            "نوع قرارداد": "اختیار خرید (Call)",
+            "قیمت تئوریک BSM": 2000,
+            "دلتا": 0.50,
+            "عمیقاً بی‌ارزش": False,
+            "ارزش معاملات امروز (ریال)": 0,
+            "میانگین ارزش ۵ روزه (ریال)": 5_000_000_000,
+            "تعداد معاملات امروز": 0,
+            "روزهای تا سررسید (DTE)": 20,
+            "بازدهی ۱ روزه پایه (%)": 2.0,
+            "بازدهی ۳ روزه پایه (%)": 4.0,
+            "بازدهی ۵ روزه پایه (%)": 6.0,
+            "فاصله پایه از SMA5 (%)": 2.0,
+            "فاصله پایه از SMA20 (%)": 1.0,
+            "وضعیت صف پایه": "صف خرید",
+            "RSI14 پایه": 50.0,
+            "وضعیت RSI پایه": "عادی",
+            "پولبک پایه": False,
+        })
+        res_zero = calculate_score(row_zero_trades, structural_liq_pct=50.0, bubble_pct_rank=60.0, config=config, leverage_pct_rank=70.0)
+        self.assertEqual(res_zero["liquidity_gate_multiplier"], 0.15)
+        self.assertAlmostEqual(res_zero["final_score"], round(res_zero["raw_final_score"] * 0.15, 1), places=1)
+        self.assertIn("فاقد معامله امروز", res_zero["explanation"])
+
+        # حالت ب: نقدینگی ترکیبی < 15
+        row_low_liq = row_zero_trades.copy()
+        row_low_liq["تعداد معاملات امروز"] = 1
+        row_low_liq["ارزش معاملات امروز (ریال)"] = 10_000_000
+        res_low_liq = calculate_score(row_low_liq, structural_liq_pct=10.0, bubble_pct_rank=60.0, config=config, leverage_pct_rank=70.0)
+        self.assertEqual(res_low_liq["liquidity_gate_multiplier"], 0.15)
+        self.assertAlmostEqual(res_low_liq["final_score"], round(res_low_liq["raw_final_score"] * 0.15, 1), places=1)
+
+        # حالت ج: نقدینگی نرم بین ۱۵ و ۴۰ (مثلاً نقدینگی ترکیبی = ۳۰ -> ضریب = 0.5 + 30/200 = 0.65)
+        row_mid_liq = row_zero_trades.copy()
+        row_mid_liq["تعداد معاملات امروز"] = 10
+        row_mid_liq["ارزش معاملات امروز (ریال)"] = 200_000_000
+        # structural 50 * 0.6 + spike 0 * 0.4 = 30
+        res_mid_liq = calculate_score(row_mid_liq, structural_liq_pct=50.0, bubble_pct_rank=60.0, config=config, leverage_pct_rank=70.0)
+        expected_mult = 0.5 + res_mid_liq["combined_liquidity_score"] / 200.0
+        self.assertAlmostEqual(res_mid_liq["liquidity_gate_multiplier"], expected_mult, places=2)
+        self.assertAlmostEqual(res_mid_liq["final_score"], round(res_mid_liq["raw_final_score"] * expected_mult, 1), places=1)
+
+        # ۲. تست خروج قطعی قرارداد Deep OTM از Top 10 حتی با حجم بالا
+        df_top_test = pd.DataFrame([
+            {
+                # قرارداد Deep OTM (BSM = 5 ریال) با معاملات و نقدینگی بسیار بالا
+                "نماد": "ضاهرم_لاتاری_حجم_بالا",
+                "دارایی پایه": "اهرم",
+                "نوع قرارداد": "اختیار خرید (Call)",
+                "قیمت پایانی بازار": 20,
+                "قیمت تئوریک BSM": 5,
+                "دلتا": 0.05,
+                "عمیقاً بی‌ارزش": True,
+                "قیمت اعمال": 120000,
+                "ارزش معاملات امروز (ریال)": 50_000_000_000,
+                "میانگین ارزش ۵ روزه (ریال)": 30_000_000_000,
+                "تعداد معاملات امروز": 500,
+                "روزهای تا سررسید (DTE)": 15,
+                "اهرم": 50.0,
+                "حباب خام (%)": None,
+                "حباب ریالی": 15,
+                "بازدهی ۱ روزه پایه (%)": 2.0,
+                "بازدهی ۳ روزه پایه (%)": 4.0,
+                "بازدهی ۵ روزه پایه (%)": 6.0,
+                "فاصله پایه از SMA5 (%)": 2.0,
+                "فاصله پایه از SMA20 (%)": 1.0,
+                "وضعیت صف پایه": "صف خرید",
+                "RSI14 پایه": 50.0,
+                "وضعیت RSI پایه": "عادی",
+                "پولبک پایه": False,
+            },
+            {
+                # قرارداد سالم واجد شرایط
+                "نماد": "ضاهرم_عادی_سالم",
+                "دارایی پایه": "اهرم",
+                "نوع قرارداد": "اختیار خرید (Call)",
+                "قیمت پایانی بازار": 1800,
+                "قیمت تئوریک BSM": 1750,
+                "دلتا": 0.45,
+                "عمیقاً بی‌ارزش": False,
+                "قیمت اعمال": 60000,
+                "ارزش معاملات امروز (ریال)": 8_000_000_000,
+                "میانگین ارزش ۵ روزه (ریال)": 6_000_000_000,
+                "تعداد معاملات امروز": 60,
+                "روزهای تا سررسید (DTE)": 20,
+                "اهرم": 5.2,
+                "حباب خام (%)": 2.8,
+                "حباب ریالی": 50,
+                "بازدهی ۱ روزه پایه (%)": 2.0,
+                "بازدهی ۳ روزه پایه (%)": 4.0,
+                "بازدهی ۵ روزه پایه (%)": 6.0,
+                "فاصله پایه از SMA5 (%)": 2.0,
+                "فاصله پایه از SMA20 (%)": 1.0,
+                "وضعیت صف پایه": "صف خرید",
+                "RSI14 پایه": 50.0,
+                "وضعیت RSI پایه": "عادی",
+                "پولبک پایه": False,
+            },
+        ])
+        df_c_top, _, _ = compute_top_call_and_put(df_top_test, config, top_n=10)
+        # فقط قرارداد سالم باید وارد Top شود؛ قرارداد Deep OTM به هیچ وجه نباید وارد شود
+        self.assertEqual(len(df_c_top), 1)
+        self.assertEqual(df_c_top.iloc[0]["نماد"], "ضاهرم_عادی_سالم")
+
+        # ۳. تست ستون‌های خروجی Overview CSV برای نسخه v3
+        df_ov = create_top_choices_overview_df(df_c_top, pd.DataFrame())
+        self.assertIn("امتیاز اهرم (۱۵٪)", df_ov.columns)
+        self.assertIn("امتیاز ارزش نسبی حباب (۲۰٪)", df_ov.columns)
+        self.assertIn("امتیاز نقدینگی ترکیبی (۲۵٪)", df_ov.columns)
+        self.assertIn("ضریب دروازه نقدینگی", df_ov.columns)
 
 
 if __name__ == "__main__":
