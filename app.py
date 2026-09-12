@@ -29,7 +29,14 @@ from config import load_config, AppConfig
 from data.market_fetcher import MarketFetcher
 from data.history_fetcher import HistoryFetcher
 from analytics.metrics import process_options_dataframe
-from analytics.unified_scoring import compute_top_call_and_put, calculate_score, get_sister_contracts
+from analytics.unified_scoring import (
+    compute_top_call_and_put,
+    calculate_score,
+    get_sister_contracts,
+    validate_top10,
+    MIN_LEVERAGE_CALL,
+    MIN_LEVERAGE_PUT,
+)
 from reports.csv_exporter import create_top_choices_overview_df, export_top_choices_csv
 
 CACHE_FILE = os.path.join("cache", "market_data_cache.pkl")
@@ -1018,6 +1025,16 @@ with tab2:
         df_calls_top, df_puts_top, conc_info = compute_top_call_and_put(
             df_all, config=config, top_n=10
         )
+
+        # قدم ۵ — خودآزمایی اجباری قبل از نمایش
+        val_errors = conc_info.get("validation_errors", {})
+        errors_call = val_errors.get("Call", [])
+        errors_put = val_errors.get("Put", [])
+        if errors_call or errors_put:
+            st.error("خطای اعتبارسنجی الگوریتم — نتایج فعلی قابل اعتماد نیستند:")
+            for e in errors_call + errors_put:
+                st.error(e)
+            st.stop()  # از نمایش نتایج نادرست جلوگیری کن
 
         # آماده‌سازی داده‌های فایل خلاصه جامع گزینه‌های برتر (Top Choices Overview CSV)
         df_top_overview = create_top_choices_overview_df(df_calls_top, df_puts_top)
