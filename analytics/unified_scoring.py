@@ -437,19 +437,29 @@ def calculate_score(
     else:
         final_score_output = final_numeric_score
         hard = config.unified_scoring.hard_filter
+        min_dte = getattr(hard, "min_dte", 3)
         if is_call:
-            min_val = getattr(getattr(hard, "call", None), "min_trade_value_rials", hard.min_trade_value_rials)
-            min_trades = getattr(getattr(hard, "call", None), "min_trade_count", hard.min_trade_count)
+            min_val = getattr(getattr(hard, "call", None), "min_trade_value_rials", getattr(hard, "min_trade_value_rials", 5_000_000_000.0))
+            min_trades = getattr(getattr(hard, "call", None), "min_trade_count", getattr(hard, "min_trade_count", 30))
+            min_lev = getattr(getattr(hard, "call", None), "min_leverage", getattr(hard, "min_leverage_call", getattr(hard, "min_leverage", 3.0)))
         else:
             min_val = getattr(getattr(hard, "put", None), "min_trade_value_rials", 1_000_000_000.0)
             min_trades = getattr(getattr(hard, "put", None), "min_trade_count", 10)
+            min_lev = getattr(getattr(hard, "put", None), "min_leverage", getattr(hard, "min_leverage_put", getattr(hard, "min_leverage", 3.0)))
 
+        lev_val = float(row.get("اهرم", 0.0) or 0.0)
+
+        # نسخه v4: ترتیب اعمال فیلترهای سه‌گانه قبل از رتبه‌بندی نهایی
+        # مرحله ۱: گیت Deep-OTM / لاتاری
+        # مرحله ۲: گیت نقدینگی سخت (ارزش و تعداد معاملات و DTE)
+        # مرحله ۳: گیت سخت اهرم (حداقل ۳.۰)
         passes_hard_filter = bool(
-            val_today >= min_val
-            and trade_count >= min_trades
-            and trade_count > 0
-            and dte >= hard.min_dte
-            and not is_deep_otm
+            (not is_deep_otm)
+            and (val_today >= min_val)
+            and (trade_count >= min_trades)
+            and (trade_count > 0)
+            and (dte >= min_dte)
+            and (lev_val >= min_lev)
         )
 
     # دلایل کلی
@@ -681,19 +691,40 @@ def compute_top_call_and_put(
         elif n_valid == 1:
             bubble_pct_series.loc[valid_b_mask] = 50.0
 
-        # رتبه‌بندی صدکی اهرم (فقط روی قراردادهای غیر Deep OTM و دارای معامله امروز)
+        # رتبه‌بندی صدکی اهرم (نسخه v4: ترتیب فیلترهای سه‌گانه و رتبه‌بندی درون eligible_contracts)
+        hard = config.unified_scoring.hard_filter
+        min_dte = getattr(hard, "min_dte", 3)
+        min_val_call = getattr(getattr(hard, "call", None), "min_trade_value_rials", 5_000_000_000.0)
+        min_trades_call = getattr(getattr(hard, "call", None), "min_trade_count", 30)
+        min_lev_call = getattr(getattr(hard, "call", None), "min_leverage", getattr(hard, "min_leverage_call", 3.0))
+
+        min_val_put = getattr(getattr(hard, "put", None), "min_trade_value_rials", 1_000_000_000.0)
+        min_trades_put = getattr(getattr(hard, "put", None), "min_trade_count", 10)
+        min_lev_put = getattr(getattr(hard, "put", None), "min_leverage", getattr(hard, "min_leverage_put", 3.0))
+
+        is_call_all = df_all["نوع قرارداد"].astype(str).str.contains("Call|خرید", case=False, na=False) | df_all["نماد"].astype(str).str.startswith("ض")
+        val_all = df_all["ارزش معاملات امروز (ریال)"] if "ارزش معاملات امروز (ریال)" in df_all.columns else pd.Series(0.0, index=df_all.index)
+        dte_all = df_all["روزهای تا سررسید (DTE)"] if "روزهای تا سررسید (DTE)" in df_all.columns else pd.Series(0, index=df_all.index)
+
+        req_val = np.where(is_call_all, min_val_call, min_val_put)
+        req_trades = np.where(is_call_all, min_trades_call, min_trades_put)
+        req_lev = np.where(is_call_all, min_lev_call, min_lev_put)
+
         lev_series = df_all["اهرم"] if "اهرم" in df_all.columns else pd.Series(0.0, index=df_all.index)
         eligible_lev_mask = (
             (~deep_mask)
+            & (val_all >= req_val)
+            & (trades_series >= req_trades)
             & (trades_series > 0)
+            & (dte_all >= min_dte)
             & (lev_series.notna())
-            & (lev_series > 0)
+            & (lev_series >= req_lev)
         )
         n_lev_valid = int(eligible_lev_mask.sum())
         leverage_pct_series = pd.Series(index=df_all.index, dtype=float).fillna(0.0)
         if n_lev_valid > 1:
             lev_ranks = rankdata(lev_series.loc[eligible_lev_mask], method="average")
-            leverage_pct_series.loc[eligible_lev_mask] = (lev_ranks / n_lev_valid) * 100.0
+            leverage_pct_series.loc[eligible_lev_mask] = np.round((lev_ranks / n_lev_valid) * 100.0, 1)
         elif n_lev_valid == 1:
             leverage_pct_series.loc[eligible_lev_mask] = 50.0
 
@@ -743,12 +774,20 @@ def compute_top_call_and_put(
         df_scored["چرا این امتیاز"] = explanations
         df_scored["ضریب دروازه نقدینگی"] = gate_mults
 
-    # فیلتر سخت: فقط قراردادهای واجد شرایط وارد لیست‌های برتر می‌شوند
-    # تضمین ۱۰۰٪ عدم ورود قراردادهای Deep OTM، صفر معامله یا بدون امتیاز معتبر
+    # فیلترهای سه‌گانه: فقط قراردادهای واجد شرایط وارد لیست‌های برتر می‌شوند
+    # تضمین ۱۰۰٪ عدم ورود قراردادهای Deep OTM، فاقد معامله امروز، اهرم زیر ۳.۰، یا بدون امتیاز معتبر
+    hard = config.unified_scoring.hard_filter
+    min_lev_call = getattr(getattr(hard, "call", None), "min_leverage", getattr(hard, "min_leverage_call", 3.0))
+    min_lev_put = getattr(getattr(hard, "put", None), "min_leverage", getattr(hard, "min_leverage_put", 3.0))
+
+    is_call_full = df_scored["نوع قرارداد"].astype(str).str.contains("Call|خرید", case=False, na=False) | df_scored["نماد"].astype(str).str.startswith("ض")
+    req_lev_scored = np.where(is_call_full, min_lev_call, min_lev_put)
+
     df_eligible = df_scored[
         (df_scored["واجد فیلتر سخت"] == True)
         & (~df_scored.get("عمیقاً بی‌ارزش", False))
         & (df_scored.get("تعداد معاملات امروز", 0) > 0)
+        & (df_scored.get("اهرم", 0.0) >= req_lev_scored)
         & (df_scored["امتیاز الگوریتم"].notna())
     ].copy()
 
@@ -757,6 +796,17 @@ def compute_top_call_and_put(
 
     df_calls_pool = df_eligible[is_call_series].sort_values("امتیاز الگوریتم", ascending=False).copy()
     df_puts_pool = df_eligible[~is_call_series].sort_values("امتیاز الگوریتم", ascending=False).copy()
+
+    # لاگ کردن تعداد قراردادهای واجد شرایط Call و Put پس از گیت‌های ۳گانه (نسخه v4)
+    n_eligible_calls = len(df_calls_pool)
+    n_eligible_puts = len(df_puts_pool)
+    logger.info(f"تعداد قراردادهای واجد شرایط Call پس از اعمال گیت‌های ۳گانه: {n_eligible_calls}")
+    logger.info(f"تعداد قراردادهای واجد شرایط Put پس از اعمال گیت‌های ۳گانه: {n_eligible_puts}")
+    if n_eligible_puts < 5:
+        logger.warning(
+            f"هشدار عمق کم بازار Put: فقط {n_eligible_puts} قرارداد واجد شرایط یافت شد (کمتر از ۵ قرارداد). "
+            f"پیشنهاد بازبینی آستانه MIN_LEVERAGE_PUT یا نقدینگی در جلسات آتی."
+        )
 
     # محاسبه رتبه درون دارایی پایه برای تمام قراردادهای واجد شرایط Call و Put
     if not df_calls_pool.empty:
@@ -823,6 +873,10 @@ def compute_top_call_and_put(
         "put_warning": False,
         "put_sym": None,
         "put_count": 0,
+        "eligible_calls_count": n_eligible_calls,
+        "eligible_puts_count": n_eligible_puts,
+        "min_leverage_call": min_lev_call,
+        "min_leverage_put": min_lev_put,
     }
 
     if not df_calls.empty:

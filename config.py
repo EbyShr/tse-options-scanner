@@ -51,6 +51,7 @@ class LiquidityBreakdownConfig:
 class OptionTypeHardFilterConfig:
     min_trade_value_rials: float = 5_000_000_000.0
     min_trade_count: int = 30
+    min_leverage: float = 3.0
 
 
 @dataclass
@@ -58,11 +59,14 @@ class HardFilterConfig:
     min_dte: int = 3
     min_trade_value_rials: float = 5_000_000_000.0
     min_trade_count: int = 30
+    min_leverage: float = 3.0
+    min_leverage_call: float = 3.0
+    min_leverage_put: float = 3.0
     call: OptionTypeHardFilterConfig = field(
-        default_factory=lambda: OptionTypeHardFilterConfig(min_trade_value_rials=5_000_000_000.0, min_trade_count=30)
+        default_factory=lambda: OptionTypeHardFilterConfig(min_trade_value_rials=5_000_000_000.0, min_trade_count=30, min_leverage=3.0)
     )
     put: OptionTypeHardFilterConfig = field(
-        default_factory=lambda: OptionTypeHardFilterConfig(min_trade_value_rials=1_000_000_000.0, min_trade_count=10)
+        default_factory=lambda: OptionTypeHardFilterConfig(min_trade_value_rials=1_000_000_000.0, min_trade_count=10, min_leverage=3.0)
     )
 
 
@@ -211,8 +215,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         put_hard_data = u_hard_data.get("put", {})
         call_min_val = float(call_hard_data.get("min_trade_value_rials", u_hard_data.get("min_trade_value_rials", 5_000_000_000.0)))
         call_min_trades = int(call_hard_data.get("min_trade_count", u_hard_data.get("min_trade_count", 30)))
+        call_min_lev = float(call_hard_data.get("min_leverage", u_hard_data.get("min_leverage_call", u_hard_data.get("min_leverage", 3.0))))
         put_min_val = float(put_hard_data.get("min_trade_value_rials", 1_000_000_000.0))
         put_min_trades = int(put_hard_data.get("min_trade_count", 10))
+        put_min_lev = float(put_hard_data.get("min_leverage", u_hard_data.get("min_leverage_put", u_hard_data.get("min_leverage", 3.0))))
 
         ret_3d_th = float(u_anti_data.get("return_3d_threshold_pct", u_anti_data.get("threshold_pct", 15.0)))
         ret_1d_th = float(u_anti_data.get("fallback_return_1d_threshold_pct", 5.0))
@@ -227,25 +233,31 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         unified = UnifiedScoringConfig(
             weights=UnifiedWeightsConfig(
                 underlying_readiness=float(u_weights_data.get("underlying_readiness", 0.25)),
-                combined_liquidity=float(u_weights_data.get("combined_liquidity", 0.30)),
-                relative_value=float(u_weights_data.get("relative_value", 0.30)),
+                relative_value=float(u_weights_data.get("relative_value", 0.20)),
+                leverage=float(u_weights_data.get("leverage", 0.15)),
+                combined_liquidity=float(u_weights_data.get("combined_liquidity", 0.25)),
                 dte_suitability=float(u_weights_data.get("dte_suitability", 0.15)),
             ),
             liquidity_breakdown=LiquidityBreakdownConfig(
-                structural_weight=float(u_liq_data.get("structural_weight", 0.18)),
-                spike_weight=float(u_liq_data.get("spike_weight", 0.12)),
+                structural_weight=float(u_liq_data.get("structural_weight", 0.15)),
+                spike_weight=float(u_liq_data.get("spike_weight", 0.10)),
             ),
             hard_filter=HardFilterConfig(
                 min_dte=int(u_hard_data.get("min_dte", 3)),
                 min_trade_value_rials=call_min_val,
                 min_trade_count=call_min_trades,
+                min_leverage=call_min_lev,
+                min_leverage_call=call_min_lev,
+                min_leverage_put=put_min_lev,
                 call=OptionTypeHardFilterConfig(
                     min_trade_value_rials=call_min_val,
                     min_trade_count=call_min_trades,
+                    min_leverage=call_min_lev,
                 ),
                 put=OptionTypeHardFilterConfig(
                     min_trade_value_rials=put_min_val,
                     min_trade_count=put_min_trades,
+                    min_leverage=put_min_lev,
                 ),
             ),
             anti_chasing=AntiChasingConfig(

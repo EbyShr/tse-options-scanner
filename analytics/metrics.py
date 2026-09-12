@@ -261,13 +261,34 @@ def process_options_dataframe(
         combined_liq_rank = 0.7 * (val_ranks / n_items) + 0.3 * (trade_ranks / n_items)
         df_res["رتبه صدکی نقدینگی"] = np.round(combined_liq_rank * 100.0, 1)
 
-        # رتبه‌بندی اهرم (جزء مستقل جدید ۱۵٪ - بخش ۱.۳):
-        # فقط روی قراردادهایی که Deep OTM نیستند و امروز حداقل ۱ معامله داشته‌اند
+        # رتبه‌بندی اهرم (جزء مستقل ۱۵٪ - نسخه v4):
+        # ترتیب فیلترهای سه‌گانه قبل از رتبه‌بندی نهایی اهرم:
+        # مرحله ۱: گیت Deep-OTM (بدون تغییر)
+        # مرحله ۲: گیت نقدینگی سخت (تفکیک Call و Put، ارزش و تعداد معاملات و DTE)
+        # مرحله ۳: گیت سخت اهرم (حداقل ۳.۰، تفکیک Call و Put)
+        hard = config.unified_scoring.hard_filter
+        min_dte = getattr(hard, "min_dte", 3)
+        min_val_call = getattr(getattr(hard, "call", None), "min_trade_value_rials", getattr(hard, "min_trade_value_rials", 5_000_000_000.0))
+        min_trades_call = getattr(getattr(hard, "call", None), "min_trade_count", getattr(hard, "min_trade_count", 30))
+        min_lev_call = getattr(getattr(hard, "call", None), "min_leverage", getattr(hard, "min_leverage_call", 3.0))
+
+        min_val_put = getattr(getattr(hard, "put", None), "min_trade_value_rials", 1_000_000_000.0)
+        min_trades_put = getattr(getattr(hard, "put", None), "min_trade_count", 10)
+        min_lev_put = getattr(getattr(hard, "put", None), "min_leverage", getattr(hard, "min_leverage_put", 3.0))
+
+        is_call_res = df_res["نوع قرارداد"].astype(str).str.contains("Call|خرید", case=False, na=False) | df_res["نماد"].astype(str).str.startswith("ض")
+        req_val = np.where(is_call_res, min_val_call, min_val_put)
+        req_trades = np.where(is_call_res, min_trades_call, min_trades_put)
+        req_lev = np.where(is_call_res, min_lev_call, min_lev_put)
+
         eligible_lev_mask = (
             (~df_res["عمیقاً بی‌ارزش"])
+            & (df_res["ارزش معاملات امروز (ریال)"] >= req_val)
+            & (df_res["تعداد معاملات امروز"] >= req_trades)
             & (df_res["تعداد معاملات امروز"] > 0)
+            & (df_res["روزهای تا سررسید (DTE)"] >= min_dte)
             & (df_res["اهرم"].notna())
-            & (df_res["اهرم"] > 0)
+            & (df_res["اهرم"] >= req_lev)
         )
         n_lev = int(eligible_lev_mask.sum())
         df_res["رتبه صدکی اهرم"] = 0.0

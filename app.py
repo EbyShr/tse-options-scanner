@@ -769,7 +769,7 @@ st.markdown(
         <h2 style="margin:0; font-weight:bold;">📈 اسکنر و رتبه‌بند اختیار معامله بورس تهران</h2>
     </div>
     <div style="color:#64748B; font-size:14px; margin-bottom:18px;">
-        پایش جامع ۲۴ دارایی پایه • ارزش‌گذاری بلک-شولز • رتبه‌بندی الگوریتمی ۵ مؤلفه‌ای (v3) • مهار Deep OTM و سقف ضد-Chasing
+        پایش جامع ۲۴ دارایی پایه • ارزش‌گذاری بلک-شولز • رتبه‌بندی الگوریتمی نسخه v4 (گیت سخت اهرم ≥ ۳.۰) • مهار Deep OTM و سقف ضد-Chasing
     </div>
     """,
     unsafe_allow_html=True,
@@ -1088,10 +1088,15 @@ with tab2:
                     unsafe_allow_html=True,
                 )
 
+            min_lev_cfg = conc_info.get("min_leverage_call", 3.0) if is_call_type else conc_info.get("min_leverage_put", 3.0)
             if df_top.empty:
                 thresh_text = "۵۰۰ میلیون تومان و ۳۰ معامله" if is_call_type else "۱۰۰ میلیون تومان و ۱۰ معامله"
-                st.info(f"هیچ قراردادی واجد شرایط فیلترهای سخت (ارزش معامله روزانه بالای {thresh_text}، ۳ روز DTE و عدم حضور در Deep OTM) نشد.")
+                st.info(f"هیچ قراردادی واجد شرایط فیلترهای سخت سه‌گانه (ارزش معامله بالای {thresh_text}، اهرم ≥ {min_lev_cfg:.1f}x، ۳ روز DTE و عدم حضور در Deep OTM) نشد.")
                 return
+
+            if 0 < len(df_top) < 10:
+                type_name = "خرید (Call)" if is_call_type else "فروش (Put)"
+                st.info(f"ℹ️ امروز فقط {len(df_top)} قرارداد واجد شرایط برای {type_name} یافت شد (به دلیل اعمال گیت‌های سخت نقدینگی، اهرم ≥ {min_lev_cfg:.1f}x و مهار Deep OTM).")
 
             for rank_i, (_, row_item) in enumerate(df_top.iterrows(), 1):
                 sym = row_item["نماد"]
