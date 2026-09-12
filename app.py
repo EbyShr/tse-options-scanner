@@ -78,7 +78,7 @@ def fetch_raw_market_snapshot(target_symbols_tuple):
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_cached_underlying_stats(target_symbols_tuple, request_timeout=8):
     """استخراج تاریخچه، شاخص‌های تکنیکال، دیتای ۳‌روزه و سقف نوسان دارایی‌های پایه با کش ۵ دقیقه‌ای (۳۰۰ ثانیه)"""
-    history_fetcher = HistoryFetcher(timeout=request_timeout, max_workers=16)
+    history_fetcher = HistoryFetcher(timeout=request_timeout, max_workers=20)
     return history_fetcher.fetch_all_underlying_stats(list(target_symbols_tuple))
 
 
@@ -103,7 +103,7 @@ def execute_pipeline(config: AppConfig, progress_container=None):
         p_bar.progress(0.4, text=f"۲/۴: استخراج موازی شاخص‌های {len(target_symbols)} دارایی پایه (کش ۳۰۰ ثانیه‌ای)...")
 
     # ۲. استخراج موازی دارایی‌های پایه (کش‌شده ۵ دقیقه‌ای)
-    history_fetcher = HistoryFetcher(timeout=config.network.request_timeout, max_workers=16)
+    history_fetcher = HistoryFetcher(timeout=config.network.request_timeout, max_workers=20)
     underlying_stats = fetch_cached_underlying_stats(
         target_symbols, request_timeout=config.network.request_timeout
     )
