@@ -1,0 +1,9 @@
+﻿cache/*.pkl
+logs/*.log
+outputs/*.xlsx
+outputs/*.csv
+__pycache__/
+*.pyc
+.git/
+.vscode/
+.idea/
