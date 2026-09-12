@@ -69,7 +69,12 @@ class OptionContract:
     reasons: List[str] = field(default_factory=list)
     explanation: str = ""
     gate_status: str = "واجد شرایط"
+    first_failed_gate: str = ""
     passes_hard_filter: bool = False
+    passed_otm_gate: bool = False
+    passed_liquidity_gate: bool = False
+    passed_leverage_gate: bool = False
+    passed_dte_gate: bool = False
 
     # متادیتای تکمیلی جهت نمایش، مقایسه و خروجی CSV
     name: str = ""
@@ -126,8 +131,8 @@ class OptionContract:
             "today_trade_count": self.today_trade_count,
             "میانگین ارزش ۵ روزه (ریال)": self.avg_5d_trade_value,
             "avg_5d_trade_value": self.avg_5d_trade_value,
-            "امتیاز الگوریتم": self.final_score,
-            "امتیاز ترکیبی": self.final_score,
+            "امتیاز الگوریتم": (round(self.final_score, 1) if self.final_score is not None else 0.0) if self.passes_hard_filter else (f"رد شده در گیت {self.first_failed_gate}" if self.first_failed_gate else "رد شده"),
+            "امتیاز ترکیبی": (round(self.final_score, 1) if self.final_score is not None else 0.0) if self.passes_hard_filter else (f"رد شده در گیت {self.first_failed_gate}" if self.first_failed_gate else "رد شده"),
             "final_score": self.final_score,
             "امتیاز آمادگی پایه": self.readiness_score,
             "امتیاز ارزش نسبی (حباب)": self.relative_value_score,
@@ -137,6 +142,12 @@ class OptionContract:
             "امتیاز جهش لحظه‌ای": self.spike_liquidity_score,
             "امتیاز تناسب DTE": self.dte_score,
             "واجد فیلتر سخت": self.passes_hard_filter,
+            "passed_otm_gate": self.passed_otm_gate,
+            "passed_liquidity_gate": self.passed_liquidity_gate,
+            "passed_leverage_gate": self.passed_leverage_gate,
+            "passed_dte_gate": self.passed_dte_gate,
+            "first_failed_gate": self.first_failed_gate,
+            "وضعیت فیلتر": self.gate_status,
             "چرا این امتیاز": self.explanation,
             "شرح فرمول امتیاز": self.explanation,
             "حباب خام (%)": self.bubble_pct,
@@ -172,6 +183,13 @@ class OptionContract:
     def to_dict(self) -> Dict[str, Any]:
         """تبدیل به دیکشنری کامل جهت ساخت DataFrame"""
         is_deep = not (self.is_valid_pricing and (self.bsm_price or 0) >= 10 and abs(self.delta or 0) >= 0.10)
+        
+        # مقدار ستون امتیاز: برای واجدین عدد و برای ردشدگان نام گیت ردکننده
+        if self.passes_hard_filter:
+            score_display = round(self.final_score, 1) if self.final_score is not None else 0.0
+        else:
+            score_display = f"رد شده در گیت {self.first_failed_gate}" if self.first_failed_gate else "رد شده"
+
         return {
             "نماد": self.symbol,
             "نام قرارداد": self.name,
@@ -192,8 +210,8 @@ class OptionContract:
             "میانگین ارزش ۵ روزه (ریال)": self.avg_5d_trade_value,
             "حباب خام (%)": self.bubble_pct,
             "حباب ریالی": self.bubble_rial,
-            "امتیاز الگوریتم": self.final_score,
-            "امتیاز ترکیبی": self.final_score,
+            "امتیاز الگوریتم": score_display,
+            "امتیاز ترکیبی": score_display,
             "امتیاز آمادگی پایه": self.readiness_score,
             "امتیاز ارزش نسبی (حباب)": self.relative_value_score,
             "امتیاز اهرم": self.leverage_score,
@@ -203,6 +221,11 @@ class OptionContract:
             "امتیاز تناسب DTE": self.dte_score,
             "واجد فیلتر سخت": self.passes_hard_filter,
             "وضعیت فیلتر": self.gate_status,
+            "passed_otm_gate": self.passed_otm_gate,
+            "passed_liquidity_gate": self.passed_liquidity_gate,
+            "passed_leverage_gate": self.passed_leverage_gate,
+            "passed_dte_gate": self.passed_dte_gate,
+            "first_failed_gate": self.first_failed_gate,
             "چرا این امتیاز": self.explanation,
             "شرح فرمول امتیاز": self.explanation,
             "عمیقاً بی‌ارزش": is_deep,
@@ -330,47 +353,35 @@ def build_contracts(
             )
 
         # تعیین bsm_price
-        if has_bsm_col:
-            if pd.notna(raw_bsm) and raw_bsm is not None and float(raw_bsm) > 0:
-                bsm_price = round(float(raw_bsm), 1)
-            else:
-                bsm_price = None
+        if has_bsm_col and pd.notna(raw_bsm) and raw_bsm is not None and float(raw_bsm) > 0:
+            bsm_price = round(float(raw_bsm), 1)
+        elif calc_bsm is not None and calc_bsm > 0:
+            bsm_price = round(calc_bsm, 1)
+        elif market_p > 0 and pd.notna(row.get("حباب ریالی")):
+            bsm_price = round(market_p - float(row.get("حباب ریالی")), 1)
+        elif market_p > 0 and pd.notna(row.get("حباب خام (%)")):
+            b_pct = float(row.get("حباب خام (%)"))
+            bsm_price = round(market_p / (1.0 + b_pct / 100.0), 1)
         else:
-            if calc_bsm is not None and calc_bsm > 0:
-                bsm_price = round(calc_bsm, 1)
-            elif market_p > 0 and pd.notna(row.get("حباب ریالی")):
-                bsm_price = round(market_p - float(row.get("حباب ریالی")), 1)
-            elif market_p > 0 and pd.notna(row.get("حباب خام (%)")):
-                b_pct = float(row.get("حباب خام (%)"))
-                bsm_price = round(market_p / (1.0 + b_pct / 100.0), 1)
-            else:
-                bsm_price = None
+            bsm_price = None
 
         # تعیین delta
-        if has_delta_col:
-            if pd.notna(raw_delta) and raw_delta is not None:
-                delta = round(float(raw_delta), 3)
-            else:
-                delta = None
+        if has_delta_col and pd.notna(raw_delta) and raw_delta is not None:
+            delta = round(float(raw_delta), 3)
+        elif calc_delta is not None and pd.notna(calc_delta):
+            delta = round(float(calc_delta), 3)
+        elif bsm_price is not None and bsm_price >= 10:
+            delta = 0.50 if is_call else -0.50
         else:
-            if calc_delta is not None and pd.notna(calc_delta):
-                delta = round(float(calc_delta), 3)
-            elif bsm_price is not None and bsm_price >= 10:
-                delta = 0.50 if is_call else -0.50
-            else:
-                delta = None
+            delta = None
 
         # تعیین leverage
-        if has_lev_col:
-            if pd.notna(raw_lev) and raw_lev is not None and float(raw_lev) > 0:
-                leverage = round(float(raw_lev), 2)
-            else:
-                leverage = None
+        if has_lev_col and pd.notna(raw_lev) and raw_lev is not None and float(raw_lev) > 0:
+            leverage = round(float(raw_lev), 2)
+        elif spot > 0 and market_p > 0 and delta is not None:
+            leverage = calculate_leverage(spot=spot, option_price=market_p, delta=delta)
         else:
-            if spot > 0 and market_p > 0 and delta is not None:
-                leverage = calculate_leverage(spot=spot, option_price=market_p, delta=delta)
-            else:
-                leverage = None
+            leverage = None
 
         # قدم ۱ — اعتبارسنجی صریح قیمت‌گذاری:
         # اگر هرکدام از bsm_price، delta، یا leverage مقدار None/NaN/نامعتبر بود،
@@ -477,78 +488,79 @@ def build_contracts(
 # ==============================================================================
 def apply_gates(contracts: List[OptionContract], option_type: str) -> Tuple[List[OptionContract], Dict[str, int]]:
     """
-    اعمال متوالی ۵ مرحله فیلترینگ سخت روی خروجی هر گیت قبلی
+    اعمال متوالی ۴ مرحله فیلترینگ سخت روی خروجی هر گیت قبلی
     و چاپ دقیق لاگ تغییرات (GATE LOG) در هر بار اجرا.
     """
     log: Dict[str, int] = {}
     step0 = [c for c in contracts if c.option_type == option_type]
     log['شروع'] = len(step0)
 
-    # مرحله ۱: گیت Deep-OTM / داده نامعتبر
-    step1 = [
-        c for c in step0
-        if c.is_valid_pricing
-        and c.bsm_price is not None
-        and c.bsm_price >= 10
-        and c.delta is not None
-        and abs(c.delta) >= 0.10
-    ]
-    log['بعد از گیت Deep-OTM/داده نامعتبر'] = len(step1)
-
-    # علامت‌گذاری نمادهای ردشده در گیت ۱
-    step1_set = set(id(c) for c in step1)
-    for c in step0:
-        if id(c) not in step1_set:
-            c.gate_status = "رد شده: Deep-OTM / داده نامعتبر"
-            c.passes_hard_filter = False
-
-    # مرحله ۲: گیت نقدینگی سخت
     min_value = MIN_TRADE_VALUE_CALL if option_type == "Call" else MIN_TRADE_VALUE_PUT
     min_count = MIN_TRADE_COUNT_CALL if option_type == "Call" else MIN_TRADE_COUNT_PUT
-    step2 = [
-        c for c in step1
-        if c.today_trade_count >= min_count
-        and c.today_trade_value >= min_value
-    ]
+    min_leverage = MIN_LEVERAGE_CALL if option_type == "Call" else MIN_LEVERAGE_PUT
+
+    for c in step0:
+        c.passed_otm_gate = bool(
+            c.is_valid_pricing
+            and c.bsm_price is not None
+            and c.bsm_price >= 10
+            and c.delta is not None
+            and abs(c.delta) >= 0.10
+        )
+        c.passed_liquidity_gate = bool(
+            c.today_trade_count >= min_count
+            and c.today_trade_value >= min_value
+        )
+        c.passed_leverage_gate = bool(
+            c.leverage is not None
+            and c.leverage >= min_leverage
+        )
+        c.passed_dte_gate = bool(c.dte >= 3)
+
+        # تعیین گیت ردکننده طبق توالی مراحل ۱ تا ۴
+        if not c.passed_otm_gate:
+            c.first_failed_gate = "Deep-OTM/داده نامعتبر"
+            c.gate_status = "رد شده در گیت Deep-OTM/داده نامعتبر"
+            c.passes_hard_filter = False
+        elif not c.passed_liquidity_gate:
+            c.first_failed_gate = "نقدینگی"
+            c.gate_status = "رد شده در گیت نقدینگی"
+            c.passes_hard_filter = False
+        elif not c.passed_leverage_gate:
+            c.first_failed_gate = "اهرم"
+            c.gate_status = "رد شده در گیت اهرم"
+            c.passes_hard_filter = False
+        elif not c.passed_dte_gate:
+            c.first_failed_gate = "DTE"
+            c.gate_status = "رد شده در گیت DTE"
+            c.passes_hard_filter = False
+        else:
+            c.first_failed_gate = ""
+            c.gate_status = "واجد شرایط"
+            c.passes_hard_filter = True
+
+    # مرحله ۱: گیت Deep-OTM / داده نامعتبر
+    step1 = [c for c in step0 if c.passed_otm_gate]
+    log['بعد از گیت Deep-OTM/داده نامعتبر'] = len(step1)
+
+    # مرحله ۲: گیت نقدینگی سخت
+    step2 = [c for c in step1 if c.passed_liquidity_gate]
     log['بعد از گیت نقدینگی'] = len(step2)
 
-    step2_set = set(id(c) for c in step2)
-    for c in step1:
-        if id(c) not in step2_set:
-            c.gate_status = f"رد شده: نقدینگی ناکافی (حداقل {min_count} معامله و {min_value/10_000_000:.0f} م.ت)"
-            c.passes_hard_filter = False
-
     # مرحله ۳: گیت سخت اهرم (MIN_LEVERAGE >= 3.0)
-    min_leverage = MIN_LEVERAGE_CALL if option_type == "Call" else MIN_LEVERAGE_PUT
-    step3 = [
-        c for c in step2
-        if c.leverage is not None
-        and c.leverage >= min_leverage
-    ]
+    step3 = [c for c in step2 if c.passed_leverage_gate]
     log['بعد از گیت اهرم'] = len(step3)
 
-    step3_set = set(id(c) for c in step3)
-    for c in step2:
-        if id(c) not in step3_set:
-            c.gate_status = f"رد شده: اهرم کمتر از {min_leverage}x"
-            c.passes_hard_filter = False
-
     # مرحله ۴: گیت DTE (حداقل ۳ روز)
-    step4 = [c for c in step3 if c.dte >= 3]
+    step4 = [c for c in step3 if c.passed_dte_gate]
     log['بعد از گیت DTE'] = len(step4)
 
-    step4_set = set(id(c) for c in step4)
-    for c in step3:
-        if id(c) not in step4_set:
-            c.gate_status = "رد شده: روزهای تا سررسید کمتر از ۳ روز"
-            c.passes_hard_filter = False
-
-    for c in step4:
-        c.gate_status = "واجد شرایط"
-        c.passes_hard_filter = True
-
-    print(f"[{option_type}] GATE LOG: {log}")
-    logger.info(f"[{option_type}] GATE LOG: {log}")
+    gate_log_msg = f"[{option_type}] GATE LOG: {log}"
+    try:
+        print(gate_log_msg)
+    except UnicodeEncodeError:
+        print(gate_log_msg.encode("ascii", errors="backslashreplace").decode("ascii"))
+    logger.info(gate_log_msg)
     return step4, log
 
 
@@ -781,17 +793,17 @@ def get_chasing_thresholds(
     return th_3d, th_1d, band
 
 
-def score_eligible_contracts(
+def score_contracts(
     eligible_contracts: List[OptionContract],
     option_type: str,
     underlying_stats: Dict[str, Dict[str, Any]],
     config: Optional[AppConfig] = None,
 ) -> List[OptionContract]:
     """
-    محاسبه ۵ جزء امتیازدهی وزنی منحصراً روی بازماندگان قدم ۲:
+    محاسبه ۵ جزء امتیازدهی وزنی:
     - آمادگی دارایی پایه: 25%
-    - ارزش نسبی / حباب: 20% (percentile معکوس حباب، فقط بین بازماندگان)
-    - اهرم: 15% (percentile اهرم، فقط بین بازماندگان)
+    - ارزش نسبی / حباب: 20% (percentile معکوس حباب)
+    - اهرم: 15% (percentile اهرم)
     - نقدینگی ترکیبی: 25% (پایدار 15% میانگین ۵ روزه + جهش 10% با سقف momentum_ratio/3.0)
     - تناسب DTE: 15%
     سپس اعمال ضریب ضربی 0.70 ضد-Chasing روی امتیاز نهایی.
@@ -892,6 +904,9 @@ def score_eligible_contracts(
         c.explanation = "؛ ".join(reasons_all[:4]) + "."
 
     return eligible_contracts
+
+
+score_eligible_contracts = score_contracts
 
 
 # ==============================================================================
@@ -1051,17 +1066,22 @@ def run_unified_scoring_pipeline(
     eligible_calls, log_call = apply_gates(all_contracts, "Call")
     eligible_puts, log_put = apply_gates(all_contracts, "Put")
 
-    # ۳. امتیازدهی وزنی منحصراً روی بازماندگان
-    scored_calls = score_eligible_contracts(eligible_calls, "Call", underlying_stats, config)
-    scored_puts = score_eligible_contracts(eligible_puts, "Put", underlying_stats, config)
+    # ۳. امتیازدهی روی همه قراردادها (نه فقط eligible_contracts) طبق دستورالعمل
+    all_calls = [c for c in all_contracts if c.option_type == "Call"]
+    all_puts = [c for c in all_contracts if c.option_type == "Put"]
+    scored_calls = score_contracts(all_calls, "Call", underlying_stats, config)
+    scored_puts = score_contracts(all_puts, "Put", underlying_stats, config)
 
-    # ۴. انتخاب Top N با سقف تنوع ۳ نماد از هر دارایی پایه
-    top10_call = select_top_n(scored_calls, n=top_n, max_per_underlying=max_per_underlying)
-    top10_put = select_top_n(scored_puts, n=top_n, max_per_underlying=max_per_underlying)
+    # ۴. انتخاب Top N صرفاً از میان واجدین شرایط فیلترهای سخت
+    valid_calls = [c for c in scored_calls if c.passes_hard_filter]
+    valid_puts = [c for c in scored_puts if c.passes_hard_filter]
 
-    # الصاق قراردادهای جایگزین همنام (Sisters)
-    attach_sister_contracts(top10_call, scored_calls)
-    attach_sister_contracts(top10_put, scored_puts)
+    top10_call = select_top_n(valid_calls, n=top_n, max_per_underlying=max_per_underlying)
+    top10_put = select_top_n(valid_puts, n=top_n, max_per_underlying=max_per_underlying)
+
+    # الصاق قراردادهای جایگزین همنام (Sisters) صرفاً از میان واجدین شرایط
+    attach_sister_contracts(top10_call, valid_calls)
+    attach_sister_contracts(top10_put, valid_puts)
 
     # ۵. خودآزمایی اجباری
     errors_call = validate_top10(top10_call, "Call")
@@ -1104,8 +1124,9 @@ STANDARD_COLUMNS = [
     "حباب خام (%)", "حباب ریالی", "امتیاز الگوریتم", "امتیاز ترکیبی",
     "امتیاز آمادگی پایه", "امتیاز ارزش نسبی (حباب)", "امتیاز اهرم",
     "امتیاز نقدینگی ترکیبی", "امتیاز نقدینگی ساختاری", "امتیاز جهش لحظه‌ای",
-    "امتیاز تناسب DTE", "واجد فیلتر سخت", "وضعیت فیلتر", "چرا این امتیاز",
-    "شرح فرمول امتیاز", "عمیقاً بی‌ارزش", "برچسب سفته‌بازی", "ضریب دروازه نقدینگی",
+    "امتیاز تناسب DTE", "واجد فیلتر سخت", "وضعیت فیلتر",
+    "passed_otm_gate", "passed_liquidity_gate", "passed_leverage_gate", "passed_dte_gate",
+    "چرا این امتیاز", "شرح فرمول امتیاز", "عمیقاً بی‌ارزش", "برچسب سفته‌بازی", "ضریب دروازه نقدینگی",
     "رتبه در دارایی پایه", "قراردادهای جایگزین", "وضعیت سودآوری",
     "فاصله تا سربه‌سر (%)", "روند دارایی پایه", "هم‌جهتی با روند",
     "کم‌عمق", "وضعیت نقدینگی", "بهترین مظنه خرید (Bid)", "بهترین مظنه فروش (Ask)", "InsCode"
@@ -1119,7 +1140,8 @@ def contracts_to_dataframe(contracts: List[OptionContract]) -> pd.DataFrame:
     rows = [c.to_dict() for c in contracts]
     df = pd.DataFrame(rows)
     if "امتیاز الگوریتم" in df.columns:
-        df = df.sort_values("امتیاز الگوریتم", ascending=False, na_position="last").reset_index(drop=True)
+        sort_key = pd.to_numeric(df["امتیاز الگوریتم"], errors="coerce")
+        df = df.iloc[sort_key.sort_values(ascending=False, na_position="last").index].reset_index(drop=True)
     return df
 
 
