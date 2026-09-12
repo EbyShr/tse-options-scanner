@@ -1,0 +1,40 @@
+# Python Bytecode and Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Temporary Market Data Cache & Pickles
+cache/*.pkl
+cache/*.tmp
+!cache/.gitkeep
+
+# Output Reports & Data
+outputs/*.xlsx
+outputs/*.csv
+!outputs/.gitkeep
+
+# Application Logs
+logs/*.log
+!logs/.gitkeep
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor & IDE Settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
