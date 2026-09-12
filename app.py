@@ -18,12 +18,13 @@ from streamlit_autorefresh import st_autorefresh
 import plotly.graph_objects as go
 
 # تنظیم خروجی کنسول به UTF-8
-if sys.stdout.encoding != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from config import load_config, AppConfig
 from data.market_fetcher import MarketFetcher
@@ -959,10 +960,10 @@ with tab1:
             "اهرم",
             "امتیاز اهرم",
             "امتیاز الگوریتم",
-            "passed_otm_gate",
-            "passed_liquidity_gate",
-            "passed_leverage_gate",
-            "passed_dte_gate",
+            "گیت Deep-OTM",
+            "گیت نقدینگی",
+            "گیت اهرم",
+            "گیت DTE",
             "برچسب سفته‌بازی",
             "آمادگی پایه",
             "ارزش معاملات امروز (ریال)",
@@ -977,6 +978,17 @@ with tab1:
         # ایجاد ستون‌های سازگار در صورت تغییر نام
         if "امتیاز آمادگی پایه" in paged_df.columns:
             paged_df["آمادگی پایه"] = paged_df["امتیاز آمادگی پایه"]
+
+        for eng_col, per_col in [
+            ("passed_otm_gate", "گیت Deep-OTM"),
+            ("passed_liquidity_gate", "گیت نقدینگی"),
+            ("passed_leverage_gate", "گیت اهرم"),
+            ("passed_dte_gate", "گیت DTE"),
+        ]:
+            if eng_col in paged_df.columns and per_col not in paged_df.columns:
+                paged_df[per_col] = paged_df[eng_col]
+            elif per_col in paged_df.columns and eng_col not in paged_df.columns:
+                paged_df[eng_col] = paged_df[per_col]
 
         active_cols = [c for c in table_cols if c in paged_df.columns]
         display_sub = paged_df[active_cols].copy()
@@ -999,7 +1011,11 @@ with tab1:
                 "اهرم": st.column_config.NumberColumn("اهرم", format="%.2f"),
                 "امتیاز اهرم": st.column_config.NumberColumn("امتیاز اهرم (۱۵٪)", format="%.1f", help="امتیاز صدکی اهرم (۰ تا ۱۰۰) در میان واجدین شرایط روز"),
                 "امتیاز الگوریتم": st.column_config.TextColumn("امتیاز الگوریتم", help="امتیاز الگوریتم برای واجدین شرایط؛ و نام گیت برای قراردادهای رد شده"),
-                "passed_otm_gate": st.column_config.CheckboxColumn("گیت OTM", help="عبور از گیت Deep-OTM / داده نامعتبر"),
+                "گیت Deep-OTM": st.column_config.CheckboxColumn("گیت Deep-OTM", help="عبور از گیت Deep-OTM / داده نامعتبر"),
+                "گیت نقدینگی": st.column_config.CheckboxColumn("گیت نقدینگی", help="عبور از گیت نقدینگی (ارزش و تعداد معاملات)"),
+                "گیت اهرم": st.column_config.CheckboxColumn("گیت اهرم", help="عبور از گیت اهرم (اهرم >= 3.0)"),
+                "گیت DTE": st.column_config.CheckboxColumn("گیت DTE", help="عبور از گیت روزهای تا سررسید (DTE >= 3)"),
+                "passed_otm_gate": st.column_config.CheckboxColumn("گیت Deep-OTM", help="عبور از گیت Deep-OTM / داده نامعتبر"),
                 "passed_liquidity_gate": st.column_config.CheckboxColumn("گیت نقدینگی", help="عبور از گیت نقدینگی (ارزش و تعداد معاملات)"),
                 "passed_leverage_gate": st.column_config.CheckboxColumn("گیت اهرم", help="عبور از گیت اهرم (اهرم >= 3.0)"),
                 "passed_dte_gate": st.column_config.CheckboxColumn("گیت DTE", help="عبور از گیت روزهای تا سررسید (DTE >= 3)"),

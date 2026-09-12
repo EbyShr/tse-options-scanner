@@ -146,6 +146,10 @@ class OptionContract:
             "passed_liquidity_gate": self.passed_liquidity_gate,
             "passed_leverage_gate": self.passed_leverage_gate,
             "passed_dte_gate": self.passed_dte_gate,
+            "گیت Deep-OTM": self.passed_otm_gate,
+            "گیت نقدینگی": self.passed_liquidity_gate,
+            "گیت اهرم": self.passed_leverage_gate,
+            "گیت DTE": self.passed_dte_gate,
             "first_failed_gate": self.first_failed_gate,
             "وضعیت فیلتر": self.gate_status,
             "چرا این امتیاز": self.explanation,
@@ -225,6 +229,10 @@ class OptionContract:
             "passed_liquidity_gate": self.passed_liquidity_gate,
             "passed_leverage_gate": self.passed_leverage_gate,
             "passed_dte_gate": self.passed_dte_gate,
+            "گیت Deep-OTM": self.passed_otm_gate,
+            "گیت نقدینگی": self.passed_liquidity_gate,
+            "گیت اهرم": self.passed_leverage_gate,
+            "گیت DTE": self.passed_dte_gate,
             "first_failed_gate": self.first_failed_gate,
             "چرا این امتیاز": self.explanation,
             "شرح فرمول امتیاز": self.explanation,
@@ -258,19 +266,40 @@ if hasattr(sys.stdout, "reconfigure"):
 def print_sample_raw_data(contracts: List[OptionContract]) -> None:
     """چاپ اولین ۵ قرارداد بلافاصله بعد از واکشی جهت اعتبارسنجی داده خام"""
     try:
-        print("SAMPLE RAW DATA (first 5 contracts):")
+        print("SAMPLE RAW DATA (first 5 contracts):", flush=True)
         for c in contracts[:5]:
             msg = (
                 f"{c.symbol}: leverage={c.leverage} (type={type(c.leverage)}), "
                 f"delta={c.delta}, BSM={c.bsm_price}, today_count={c.today_trade_count}"
             )
             try:
-                print(msg)
+                print(msg, flush=True)
             except UnicodeEncodeError:
-                print(msg.encode("ascii", errors="backslashreplace").decode("ascii"))
+                print(msg.encode("ascii", errors="backslashreplace").decode("ascii"), flush=True)
             logger.info(f"[RAW DATA] {msg}")
+        sys.stdout.flush()
     except Exception as e:
         logger.warning(f"Error printing raw sample: {e}")
+
+
+def print_liquidity_source_check(contracts: List[OptionContract]) -> None:
+    """تایید و چاپ منبع داده نقدینگی آپشن در کنسول"""
+    try:
+        print("LIQUIDITY SOURCE CHECK (5 sample contracts):", flush=True)
+        for c in contracts[:5]:
+            u_val = c.underlying_today_trade_value if hasattr(c, "underlying_today_trade_value") else "ندارد"
+            msg = (
+                f"{c.symbol} (آپشن) → today_value={c.today_trade_value}, "
+                f"today_count={c.today_trade_count} | "
+                f"underlying={c.underlying} today_value={u_val}"
+            )
+            try:
+                print(msg, flush=True)
+            except UnicodeEncodeError:
+                print(msg.encode("ascii", errors="backslashreplace").decode("ascii"), flush=True)
+        sys.stdout.flush()
+    except Exception as e:
+        logger.warning(f"Error printing liquidity source check: {e}")
 
 
 # ==============================================================================
@@ -478,8 +507,9 @@ def build_contracts(
         )
         contracts.append(c)
 
-    # قدم صفر: چاپ داده خام بلافاصله پس از ساخت
+    # قدم صفر: چاپ داده خام و تایید منبع نقدینگی بلافاصله پس از ساخت
     print_sample_raw_data(contracts)
+    print_liquidity_source_check(contracts)
     return contracts
 
 
@@ -557,9 +587,10 @@ def apply_gates(contracts: List[OptionContract], option_type: str) -> Tuple[List
 
     gate_log_msg = f"[{option_type}] GATE LOG: {log}"
     try:
-        print(gate_log_msg)
+        print(gate_log_msg, flush=True)
     except UnicodeEncodeError:
-        print(gate_log_msg.encode("ascii", errors="backslashreplace").decode("ascii"))
+        print(gate_log_msg.encode("ascii", errors="backslashreplace").decode("ascii"), flush=True)
+    import sys; sys.stdout.flush()
     logger.info(gate_log_msg)
     return step4, log
 
@@ -1126,6 +1157,7 @@ STANDARD_COLUMNS = [
     "امتیاز نقدینگی ترکیبی", "امتیاز نقدینگی ساختاری", "امتیاز جهش لحظه‌ای",
     "امتیاز تناسب DTE", "واجد فیلتر سخت", "وضعیت فیلتر",
     "passed_otm_gate", "passed_liquidity_gate", "passed_leverage_gate", "passed_dte_gate",
+    "گیت Deep-OTM", "گیت نقدینگی", "گیت اهرم", "گیت DTE",
     "چرا این امتیاز", "شرح فرمول امتیاز", "عمیقاً بی‌ارزش", "برچسب سفته‌بازی", "ضریب دروازه نقدینگی",
     "رتبه در دارایی پایه", "قراردادهای جایگزین", "وضعیت سودآوری",
     "فاصله تا سربه‌سر (%)", "روند دارایی پایه", "هم‌جهتی با روند",
